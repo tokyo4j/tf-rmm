@@ -9,6 +9,7 @@
 #include <buffer.h>
 #include <cpuid.h>
 #include <debug.h>
+#include <merge.h>
 #include <run.h>
 #include <simd.h>
 #include <smc-handler.h>
@@ -187,7 +188,8 @@ static const struct smc_handler smc_handlers[] = {
 	HANDLER(RTT_SET_S2AP,		0, 0, NULL,			 true, true),
 	HANDLER(MEC_SET_SHARED,		0, 0, NULL,			 true, true),
 	HANDLER(MEC_SET_PRIVATE,	0, 0, NULL,			 true, true),
-	HANDLER(VDEV_COMPLETE,		0, 0, NULL,			 true, true)
+	HANDLER(VDEV_COMPLETE,		0, 0, NULL,			 true, true),
+	HANDLER(RECLAIM_MERGEABLE_PAGE,	1, 1, smc_reclaim_mergeable_page, true, true)
 };
 
 COMPILER_ASSERT(ARRAY_SIZE(smc_handlers) == SMC64_NUM_FIDS_IN_RANGE(RMI));

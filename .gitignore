@@ -1,4 +1,5 @@
 build
+build-*
 *.cscope
 cscope.*
 .tags
@@ -11,3 +12,6 @@ out
 *.patch
 *.swp
 ext/libspdm
+.vscode
+.cache
+compile_commands.json

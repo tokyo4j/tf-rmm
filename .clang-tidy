@@ -30,6 +30,9 @@ Checks: '-*,
     -misc-no-recursion,
     -misc-static-assert,
     performance-*,
+    -bugprone-casting-through-void,
+    -misc-unused-parameters,
+    -bugprone-assignment-in-if-condition,
     -performance-no-int-to-ptr'
 
 #

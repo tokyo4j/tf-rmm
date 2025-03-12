@@ -884,10 +884,10 @@ static unsigned long validate_data_create(unsigned long map_addr,
  * if @g_src == NULL, implements RMI_DATA_CREATE_UNKNOWN
  * and RMI_DATA_CREATE otherwise.
  */
-static unsigned long data_create(unsigned long rd_addr,
-				 unsigned long data_addr,
-				 unsigned long map_addr,
-				 struct granule *g_src,
+static unsigned long data_create(unsigned long rd_addr, // hPA for RD
+				 unsigned long data_addr, // hPA for destination
+				 unsigned long map_addr, // gPA for destination
+				 struct granule *g_src, // granule for source
 				 unsigned long flags)
 {
 	struct granule *g_data;

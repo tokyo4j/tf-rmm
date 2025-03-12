@@ -281,6 +281,8 @@ static struct granule *find_lock_next_level(const struct s2tt_context *s2_ctx,
 	return g;
 }
 
+#include "debug.h"
+
 /*
  * Walk an RTT until level @level using @map_addr.
  * @g_root is the root (level 0/-1) table and must be locked before the call.

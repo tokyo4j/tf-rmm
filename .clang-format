@@ -1,0 +1,11 @@
+BasedOnStyle: LLVM
+UseTab: Always
+IndentWidth: 8
+ContinuationIndentWidth: 8
+AlignAfterOpenBracket: DontAlign
+AlwaysBreakAfterDefinitionReturnType: true
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeBraces: Linux
+IndentCaseLabels: false
+SpaceBeforeParens: ControlStatementsExceptControlMacros
+ForEachMacros: []

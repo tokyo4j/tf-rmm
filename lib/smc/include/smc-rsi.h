@@ -294,6 +294,11 @@
  */
 #define SMC_RSI_PLANE_REG_WRITE		SMC64_RSI_FID(U(0x1F))
 
+/*
+ * FID: 0xC40001B0
+ */
+#define SMC_RSI_SET_PAGES_MERGEABLE	SMC64_RSI_FID(U(0x20))
+
 #ifndef __ASSEMBLER__
 /*
  * Defines member of structure and reserves space

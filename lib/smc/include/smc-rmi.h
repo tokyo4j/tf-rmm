@@ -608,6 +608,11 @@
  */
 #define SMC_RMI_VDEV_COMPLETE			SMC64_RMI_FID(U(0x3E))
 
+/*
+ * FID: 0xC400018F
+ */
+#define SMC_RMI_RECLAIM_MERGEABLE_PAGE		SMC64_RMI_FID(U(0x3F))
+
 /* Size of Realm Personalization Value */
 #ifndef CBMC
 #define RPV_SIZE		64
