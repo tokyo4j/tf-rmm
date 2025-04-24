@@ -230,7 +230,7 @@ myalloc_alloc(size_t n, size_t size)
 {
 	static bool inited = false;
 	if (!inited) {
-		static unsigned char buf[4096 * 64];
+		static unsigned char buf[20000000];
 		mymalloc_init(buf, sizeof(buf));
 		inited = true;
 	}
