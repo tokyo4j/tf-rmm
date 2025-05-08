@@ -9,6 +9,7 @@
 #include <smc.h>
 #include <string.h>
 #include <utils_def.h>
+#include <rmm_el3_ifc.h>
 
 #include <cpuid.h>
 #include <myalloc.h>
@@ -69,6 +70,14 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	uint64_t hash = hash_page((uint64_t *)mapped_page);
 
 	// NOTICE("set_page_mergeabe(): ipa=%lx pa=%lx\n", ipa, r.pa);
+
+	// struct s2tt_walk wi;
+	// struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
+	// granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
+	// s2tt_walk_lock_unlock(s2_ctx, ipa, S2TT_PAGE_LEVEL, &wi);
+	// uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
+	// uint64_t s2tte = s2tte_create_assigned_ram(s2_ctx, r.pa,
+	// S2TT_PAGE_LEVEL); s2tte_write(&s2tt[wi.index], s2tte);
 
 	struct page_item *insert_before = &mergeable;
 	PAGE_LIST_FOR_EACH(&mergeable, item)
@@ -165,7 +174,7 @@ find_duplicated_items(struct page_item **item1, struct page_item **item2)
 void
 smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 {
-	res->x[0] = RMI_SUCCESS;
+	res->x[0] = 1;
 
 	struct page_item *fixed_item, *item;
 	if (!find_duplicated_items(&fixed_item, &item)) {
@@ -183,8 +192,14 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 	s2tt_walk_lock_unlock(s2_ctx, item->ipa, S2TT_PAGE_LEVEL, &wi);
 	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
 	uint64_t s2tte =
-		s2tte_create_assigned_ram(s2_ctx, item->pa, S2TT_PAGE_LEVEL);
+		s2tte_create_assigned_ram(s2_ctx, fixed_item->pa, S2TT_PAGE_LEVEL);
 	s2tte_write(&s2tt[wi.index], s2tte);
+	s2tt_invalidate_page(s2_ctx, item->ipa);
+
+	struct granule *granule = find_granule(item->pa);
+	granule_lock(granule, GRANULE_STATE_DATA);
+	rmm_el3_ifc_gtsi_undelegate(item->pa);
+	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
 	res->x[1] = item->pa;
 	page_list_remove(item);
@@ -192,6 +207,7 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 
 	granule_unlock(wi.g_llt);
 	buffer_unmap(s2tt);
-	s2tt_invalidate_page(s2_ctx, item->ipa);
 	buffer_unmap(rec);
+
+	res->x[0] = RMI_SUCCESS;
 }
