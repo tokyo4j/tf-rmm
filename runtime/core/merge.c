@@ -59,25 +59,28 @@ hash_page(uint64_t *p)
 static void
 set_page_mergeable(struct rec *rec, uint64_t ipa)
 {
-	struct s2_walk_result r;
-	enum s2_walk_status walk_stat = realm_ipa_to_pa(rec, ipa, &r);
-	granule_unlock(r.llt);
+	struct s2tt_walk wi;
+	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
+	granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
+	s2tt_walk_lock_unlock(s2_ctx, ipa, S2TT_PAGE_LEVEL, &wi);
 
-	assert(walk_stat == WALK_SUCCESS);
-	struct granule *grn = find_granule(r.pa);
+	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
+	uint64_t s2tte = s2tte_read(&s2tt[wi.index]);
+	uint64_t pa = s2tte_pa(s2_ctx, s2tte, wi.last_level);
+	struct granule *grn = find_granule(pa);
 
 	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
 	uint64_t hash = hash_page((uint64_t *)mapped_page);
+	buffer_unmap(mapped_page);
 
-	// NOTICE("set_page_mergeabe(): ipa=%lx pa=%lx\n", ipa, r.pa);
+	const uint64_t ap_mask = 3ull << 6;
+	const uint64_t ap_ro = 1ull << 6;
+	s2tte = (s2tte & ~ap_mask) | ap_ro;
+	s2tte_write(&s2tt[wi.index], s2tte);
+	s2tt_invalidate_page(s2_ctx, ipa);
 
-	// struct s2tt_walk wi;
-	// struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
-	// granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
-	// s2tt_walk_lock_unlock(s2_ctx, ipa, S2TT_PAGE_LEVEL, &wi);
-	// uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
-	// uint64_t s2tte = s2tte_create_assigned_ram(s2_ctx, r.pa,
-	// S2TT_PAGE_LEVEL); s2tte_write(&s2tt[wi.index], s2tte);
+	buffer_unmap(s2tt);
+	granule_unlock(wi.g_llt);
 
 	struct page_item *insert_before = &mergeable;
 	PAGE_LIST_FOR_EACH(&mergeable, item)
@@ -95,13 +98,11 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 		panic();
 	}
 	new_item->ipa = ipa;
-	new_item->pa = r.pa;
+	new_item->pa = pa;
 	new_item->hash = hash;
 	new_item->g_rec = rec->g_rec;
 	// insert before the first item with larger hash
 	page_list_add(insert_before, new_item);
-
-	buffer_unmap(mapped_page);
 }
 
 void
