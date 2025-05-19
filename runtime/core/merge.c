@@ -14,6 +14,12 @@
 #include <cpuid.h>
 #include <myalloc.h>
 
+#define SWAP(x, y) do { \
+	__typeof__(x) tmp = (x); \
+ 	(x) = (y); \
+ 	(y) = (tmp); \
+} while (0)
+
 struct page_item {
 	uint64_t ipa;
 	uint64_t pa;
@@ -21,6 +27,7 @@ struct page_item {
 	// TODO revoke rec on realm destruction
 	struct granule *g_rec;
 	struct page_item *prev, *next;
+	bool merged;
 };
 
 struct page_item mergeable = {.prev = &mergeable, .next = &mergeable};
@@ -149,21 +156,25 @@ items_identical(struct page_item *item1, struct page_item *item2)
 }
 
 static bool
-find_duplicated_items(struct page_item **item1, struct page_item **item2)
+find_duplicated_items(struct page_item **copied_to_item, struct page_item **merged_item)
 {
 	struct page_item *prev_item = NULL;
 	PAGE_LIST_FOR_EACH(&mergeable, item)
 	{
-		// NOTICE("find_duplicated_items item->hash=%lx\n", item->hash);
-
 		if (!prev_item) {
 			prev_item = item;
 			continue;
 		}
 
-		if (items_identical(prev_item, item)) {
-			*item1 = prev_item;
-			*item2 = item;
+		if ((!prev_item->merged || !item->merged)
+				&& items_identical(prev_item, item)) {
+			if (!prev_item->merged) {
+				*copied_to_item = prev_item;
+				*merged_item = item;
+			} else {
+				*copied_to_item = item;
+				*merged_item = prev_item;
+			}
 			return true;
 		}
 
@@ -172,42 +183,120 @@ find_duplicated_items(struct page_item **item1, struct page_item **item2)
 	return false;
 }
 
+static uint32_t
+rand(void)
+{
+	static uint32_t x = 123456;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	return x;
+}
+
+static struct page_item *
+find_reclaimed_item(struct page_item *ignored_item1, struct page_item *ignored_item2)
+{
+	uint32_t i = 0;
+	PAGE_LIST_FOR_EACH(&mergeable, item)
+	{
+		if (item == ignored_item1 || item == ignored_item2) {
+			continue;
+		}
+		i++;
+	}
+
+	if (i == 0) {
+		return NULL;
+	}
+
+	uint32_t migrated_item_idx = rand() % i;
+
+	i = 0;
+	PAGE_LIST_FOR_EACH(&mergeable, item)
+	{
+		if (item == ignored_item1 || item == ignored_item2) {
+			continue;
+		}
+		if (migrated_item_idx == i) {
+			return item;
+		}
+		i++;
+	}
+
+	panic();
+	return NULL;
+}
+
+static void
+swap_items(struct page_item *item1, struct page_item *item2)
+{
+	struct granule *g_item1 = find_granule(item1->pa);
+	struct granule *g_item2 = find_granule(item2->pa);
+	void *map_item1 = buffer_granule_map(g_item1, SLOT_RSI_CALL);
+	void *map_item2 = buffer_granule_map(g_item2, SLOT_REC);
+	char buf[4096];
+	memcpy(buf, map_item1, 4096);
+	memcpy(map_item1, map_item2, 4096);
+	memcpy(map_item2, buf, 4096);
+	buffer_unmap(map_item1);
+	buffer_unmap(map_item2);
+
+	SWAP(item1->hash, item2->hash);
+}
+
+static void
+remap_page(struct s2tt_context *s2_ctx, uint64_t ipa, uint64_t pa)
+{
+	struct s2tt_walk wi;
+	granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
+	s2tt_walk_lock_unlock(s2_ctx, ipa, S2TT_PAGE_LEVEL, &wi);
+	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
+
+	uint64_t s2tte = s2tt[wi.index];
+	const uint64_t pa_mask = BIT_MASK_ULL(48, 12);
+	s2tte = (s2tte & ~pa_mask) | pa;
+	s2tte_write(&s2tt[wi.index], s2tte);
+
+	s2tt_invalidate_page(s2_ctx, ipa);
+
+	granule_unlock(wi.g_llt);
+	buffer_unmap(s2tt);
+}
+
 void
 smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 {
 	res->x[0] = 1;
 
-	struct page_item *fixed_item, *item;
-	if (!find_duplicated_items(&fixed_item, &item)) {
-		// NOTICE("Duplicated page not found\n");
+	struct page_item *copied_to_item, *merged_item;
+	if (!find_duplicated_items(&copied_to_item, &merged_item)) {
+		return;
+	}
+	struct page_item *copied_from_item =
+		find_reclaimed_item(copied_to_item, merged_item);
+	if (!copied_from_item) {
 		return;
 	}
 
-	struct rec *rec = buffer_granule_map(item->g_rec, SLOT_REC);
+	swap_items(copied_from_item, copied_to_item);
 
-	NOTICE("Duplicated page found (ipa=%lx pa=%lx)\n", item->ipa, item->pa);
-
-	struct s2tt_walk wi;
+	struct rec *rec = buffer_granule_map(merged_item->g_rec, SLOT_REC);
 	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
-	granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
-	s2tt_walk_lock_unlock(s2_ctx, item->ipa, S2TT_PAGE_LEVEL, &wi);
-	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
-	uint64_t s2tte =
-		s2tte_create_assigned_ram(s2_ctx, fixed_item->pa, S2TT_PAGE_LEVEL);
-	s2tte_write(&s2tt[wi.index], s2tte);
-	s2tt_invalidate_page(s2_ctx, item->ipa);
 
-	struct granule *granule = find_granule(item->pa);
+	remap_page(s2_ctx, copied_to_item->ipa, merged_item->pa);
+	remap_page(s2_ctx, copied_from_item->ipa, copied_to_item->pa);
+	copied_to_item->ipa = copied_from_item->ipa;
+	merged_item->merged = true;
+
+	struct granule *granule = find_granule(copied_from_item->pa);
 	granule_lock(granule, GRANULE_STATE_DATA);
-	rmm_el3_ifc_gtsi_undelegate(item->pa);
+	rmm_el3_ifc_gtsi_undelegate(copied_from_item->pa);
 	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
-	res->x[1] = item->pa;
-	page_list_remove(item);
-	myalloc_free(item);
+	res->x[1] = copied_from_item->pa;
+	page_list_remove(copied_from_item);
+	myalloc_free(copied_from_item);
 
-	granule_unlock(wi.g_llt);
-	buffer_unmap(s2tt);
 	buffer_unmap(rec);
 
 	res->x[0] = RMI_SUCCESS;
