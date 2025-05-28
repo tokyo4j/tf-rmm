@@ -268,11 +268,14 @@ swap_items(struct page_item *item1, struct page_item *item2)
 }
 
 static void
-remap_page(struct s2tt_context *s2_ctx, uint64_t ipa, uint64_t pa)
+remap_page(struct page_item *item, uint64_t pa)
 {
+	struct rec *rec = buffer_granule_map(item->g_rec, SLOT_REC);
+	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
+
 	struct s2tt_walk wi;
 	granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
-	s2tt_walk_lock_unlock(s2_ctx, ipa, S2TT_PAGE_LEVEL, &wi);
+	s2tt_walk_lock_unlock(s2_ctx, item->ipa, S2TT_PAGE_LEVEL, &wi);
 	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
 
 	uint64_t s2tte = s2tt[wi.index];
@@ -280,10 +283,11 @@ remap_page(struct s2tt_context *s2_ctx, uint64_t ipa, uint64_t pa)
 	s2tte = (s2tte & ~pa_mask) | pa;
 	s2tte_write(&s2tt[wi.index], s2tte);
 
-	s2tt_invalidate_page(s2_ctx, ipa);
+	s2tt_invalidate_page(s2_ctx, item->ipa);
 
 	granule_unlock(wi.g_llt);
 	buffer_unmap(s2tt);
+	buffer_unmap(rec);
 }
 
 void
@@ -304,11 +308,8 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 
 	swap_items(copied_from_item, copied_to_item);
 
-	struct rec *rec = buffer_granule_map(merged_item->g_rec, SLOT_REC);
-	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
-
-	remap_page(s2_ctx, copied_to_item->ipa, merged_item->pa);
-	remap_page(s2_ctx, copied_from_item->ipa, copied_to_item->pa);
+	remap_page(copied_to_item, merged_item->pa);
+	remap_page(copied_from_item, copied_to_item->pa);
 	copied_to_item->ipa = copied_from_item->ipa;
 	merged_item->merged = true;
 
@@ -321,10 +322,7 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 	page_list_remove(copied_from_item);
 	myalloc_free(copied_from_item);
 
-	buffer_unmap(rec);
-
 	res->x[0] = RMI_SUCCESS;
-
 out:
 	spinlock_release(&lock);
 }
