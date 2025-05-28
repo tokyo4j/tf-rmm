@@ -64,7 +64,7 @@ static const struct rsi_handler rsi_logger[] = {
 	RSI_FUNCTION(_RDEV_VALIDATE_MAPPING, 6U, 2U),	/* 0xC40001AC */
 	RSI_FUNCTION(_PLANE_REG_READ, 2U, 1U),		/* 0xC40001AE */
 	RSI_FUNCTION(_PLANE_REG_WRITE, 3U, 0U),		/* 0xC40001AF */
-	// RSI_FUNCTION(_SET_PAGES_MERGEABLE, 0U, 0U)		/* ??? */
+	RSI_FUNCTION(_SET_PAGES_MERGEABLE, 0U, 0U)	/* 0xC40001B0 */
 };
 
 #define RSI_STATUS_STRING(_id)[RSI_##_id] = #_id

@@ -14,6 +14,8 @@
 #include <cpuid.h>
 #include <myalloc.h>
 
+static spinlock_t lock;
+
 #define SWAP(x, y) do { \
 	__typeof__(x) tmp = (x); \
  	(x) = (y); \
@@ -24,6 +26,7 @@ struct page_item {
 	uint64_t ipa;
 	uint64_t pa;
 	uint64_t hash;
+	uint64_t ms;
 	// TODO revoke rec on realm destruction
 	struct granule *g_rec;
 	struct page_item *prev, *next;
@@ -57,6 +60,14 @@ hash_page(uint64_t *p)
 		hash ^= *p;
 	}
 	return hash;
+}
+
+static uint64_t
+get_time_ms(void)
+{
+	uint64_t ms;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(ms));
+	return ms;
 }
 
 #define PAGE_LIST_FOR_EACH(list, item)                                         \
@@ -108,6 +119,8 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	new_item->pa = pa;
 	new_item->hash = hash;
 	new_item->g_rec = rec->g_rec;
+	new_item->ms = get_time_ms();
+
 	// insert before the first item with larger hash
 	page_list_add(insert_before, new_item);
 }
@@ -115,6 +128,7 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 void
 handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 {
+	spinlock_acquire(&lock);
 	// NOTICE("handle_rsi_set_pages_mergeable start\n");
 
 	uint64_t ipa_start = rec->regs[1];
@@ -125,6 +139,8 @@ handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 
 	res->action = UPDATE_REC_RETURN_TO_REALM;
 	res->smc_res.x[0] = RSI_SUCCESS;
+
+	spinlock_release(&lock);
 }
 
 static bool
@@ -155,9 +171,24 @@ items_identical(struct page_item *item1, struct page_item *item2)
 	return equal;
 }
 
+static uint32_t
+rand(void)
+{
+	static uint32_t x = 123456;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	return x;
+}
+
 static bool
 find_duplicated_items(struct page_item **copied_to_item, struct page_item **merged_item)
 {
+	uint64_t now = get_time_ms();
+	const uint64_t second = 1000000000;
+	uint64_t time_threshold = (uint64_t)rand() * 6 * second / UINT32_MAX;
+	// NOTICE("threshold=%ld\n", time_threshold);
+
 	struct page_item *prev_item = NULL;
 	PAGE_LIST_FOR_EACH(&mergeable, item)
 	{
@@ -167,7 +198,9 @@ find_duplicated_items(struct page_item **copied_to_item, struct page_item **merg
 		}
 
 		if ((!prev_item->merged || !item->merged)
-				&& items_identical(prev_item, item)) {
+				&& items_identical(prev_item, item)
+				&& prev_item->ms - now > time_threshold
+				&& item->ms - now > time_threshold) {
 			if (!prev_item->merged) {
 				*copied_to_item = prev_item;
 				*merged_item = item;
@@ -183,18 +216,8 @@ find_duplicated_items(struct page_item **copied_to_item, struct page_item **merg
 	return false;
 }
 
-static uint32_t
-rand(void)
-{
-	static uint32_t x = 123456;
-	x ^= x << 13;
-	x ^= x >> 17;
-	x ^= x << 5;
-	return x;
-}
-
 static struct page_item *
-find_reclaimed_item(struct page_item *ignored_item1, struct page_item *ignored_item2)
+find_copied_from_item(struct page_item *ignored_item1, struct page_item *ignored_item2)
 {
 	uint32_t i = 0;
 	PAGE_LIST_FOR_EACH(&mergeable, item)
@@ -266,16 +289,17 @@ remap_page(struct s2tt_context *s2_ctx, uint64_t ipa, uint64_t pa)
 void
 smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 {
+	spinlock_acquire(&lock);
 	res->x[0] = 1;
 
 	struct page_item *copied_to_item, *merged_item;
 	if (!find_duplicated_items(&copied_to_item, &merged_item)) {
-		return;
+		goto out;
 	}
 	struct page_item *copied_from_item =
-		find_reclaimed_item(copied_to_item, merged_item);
+		find_copied_from_item(copied_to_item, merged_item);
 	if (!copied_from_item) {
-		return;
+		goto out;
 	}
 
 	swap_items(copied_from_item, copied_to_item);
@@ -300,4 +324,7 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 	buffer_unmap(rec);
 
 	res->x[0] = RMI_SUCCESS;
+
+out:
+	spinlock_release(&lock);
 }
