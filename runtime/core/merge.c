@@ -1,26 +1,26 @@
 #include <buffer.h>
+#include <cpuid.h>
 #include <debug.h>
 #include <granule.h>
 #include <measurement.h>
 #include <merge.h>
+#include <myalloc.h>
 #include <realm.h>
+#include <rmm_el3_ifc.h>
 #include <rsi-handler.h>
 #include <smc-rsi.h>
 #include <smc.h>
 #include <string.h>
 #include <utils_def.h>
-#include <rmm_el3_ifc.h>
-
-#include <cpuid.h>
-#include <myalloc.h>
 
 static spinlock_t lock;
 
-#define SWAP(x, y) do { \
-	__typeof__(x) tmp = (x); \
- 	(x) = (y); \
- 	(y) = (tmp); \
-} while (0)
+#define SWAP(x, y)                                                             \
+	do {                                                                   \
+		__typeof__(x) tmp = (x);                                       \
+		(x) = (y);                                                     \
+		(y) = (tmp);                                                   \
+	} while (0)
 
 struct page_item {
 	uint64_t ipa;
@@ -101,8 +101,7 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	granule_unlock(wi.g_llt);
 
 	struct page_item *insert_before = &mergeable;
-	PAGE_LIST_FOR_EACH(&mergeable, item)
-	{
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
 		// NOTICE("item->hash=%lx hash=%lx\n", item->hash, hash);
 		if (item->hash >= hash) {
 			insert_before = item;
@@ -182,7 +181,8 @@ rand(void)
 }
 
 static bool
-find_duplicated_items(struct page_item **copied_to_item, struct page_item **merged_item)
+find_duplicated_items(
+	struct page_item **copied_to_item, struct page_item **merged_item)
 {
 	uint64_t now = get_time_ms();
 	const uint64_t second = 1000000000;
@@ -190,17 +190,16 @@ find_duplicated_items(struct page_item **copied_to_item, struct page_item **merg
 	// NOTICE("threshold=%ld\n", time_threshold);
 
 	struct page_item *prev_item = NULL;
-	PAGE_LIST_FOR_EACH(&mergeable, item)
-	{
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
 		if (!prev_item) {
 			prev_item = item;
 			continue;
 		}
 
 		if ((!prev_item->merged || !item->merged)
-				&& items_identical(prev_item, item)
-				&& prev_item->ms - now > time_threshold
-				&& item->ms - now > time_threshold) {
+			&& items_identical(prev_item, item)
+			&& prev_item->ms - now > time_threshold
+			&& item->ms - now > time_threshold) {
 			if (!prev_item->merged) {
 				*copied_to_item = prev_item;
 				*merged_item = item;
@@ -217,11 +216,11 @@ find_duplicated_items(struct page_item **copied_to_item, struct page_item **merg
 }
 
 static struct page_item *
-find_copied_from_item(struct page_item *ignored_item1, struct page_item *ignored_item2)
+find_copied_from_item(
+	struct page_item *ignored_item1, struct page_item *ignored_item2)
 {
 	uint32_t i = 0;
-	PAGE_LIST_FOR_EACH(&mergeable, item)
-	{
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
 		if (item == ignored_item1 || item == ignored_item2) {
 			continue;
 		}
@@ -235,8 +234,7 @@ find_copied_from_item(struct page_item *ignored_item1, struct page_item *ignored
 	uint32_t migrated_item_idx = rand() % i;
 
 	i = 0;
-	PAGE_LIST_FOR_EACH(&mergeable, item)
-	{
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
 		if (item == ignored_item1 || item == ignored_item2) {
 			continue;
 		}

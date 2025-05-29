@@ -8,4 +8,4 @@ BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeBraces: Linux
 IndentCaseLabels: false
 SpaceBeforeParens: ControlStatementsExceptControlMacros
-ForEachMacros: []
+ForEachMacros: ['PAGE_LIST_FOR_EACH']
