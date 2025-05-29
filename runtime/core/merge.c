@@ -15,13 +15,6 @@
 
 static spinlock_t lock;
 
-#define SWAP(x, y)                                                             \
-	do {                                                                   \
-		__typeof__(x) tmp = (x);                                       \
-		(x) = (y);                                                     \
-		(y) = (tmp);                                                   \
-	} while (0)
-
 struct page_item {
 	uint64_t ipa;
 	uint64_t pa;
@@ -186,8 +179,7 @@ find_duplicated_items(
 {
 	uint64_t now = get_time_ms();
 	const uint64_t second = 1000000000;
-	uint64_t time_threshold = (uint64_t)rand() * 6 * second / UINT32_MAX;
-	// NOTICE("threshold=%ld\n", time_threshold);
+	uint64_t time_threshold = 5 * second + 5 * second * (uint64_t)rand() / UINT32_MAX;
 
 	struct page_item *prev_item = NULL;
 	PAGE_LIST_FOR_EACH(&mergeable, item) {
@@ -198,8 +190,8 @@ find_duplicated_items(
 
 		if ((!prev_item->merged || !item->merged)
 			&& items_identical(prev_item, item)
-			&& prev_item->ms - now > time_threshold
-			&& item->ms - now > time_threshold) {
+			&& now - prev_item->ms > time_threshold
+			&& now - item->ms > time_threshold) {
 			if (!prev_item->merged) {
 				*copied_to_item = prev_item;
 				*merged_item = item;
