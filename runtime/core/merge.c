@@ -249,20 +249,29 @@ find_copied_from_item(
 }
 
 static void
-swap_items(struct page_item *item1, struct page_item *item2)
+copy_and_eject_item(struct page_item *dst, struct page_item *src)
 {
-	struct granule *g_item1 = find_granule(item1->pa);
-	struct granule *g_item2 = find_granule(item2->pa);
-	void *map_item1 = buffer_granule_map(g_item1, SLOT_RSI_CALL);
-	void *map_item2 = buffer_granule_map(g_item2, SLOT_REC);
-	char buf[4096];
-	memcpy(buf, map_item1, 4096);
-	memcpy(map_item1, map_item2, 4096);
-	memcpy(map_item2, buf, 4096);
-	buffer_unmap(map_item1);
-	buffer_unmap(map_item2);
+	struct granule *g_dst_item = find_granule(dst->pa);
+	struct granule *g_src_item = find_granule(src->pa);
+	void *map_dst = buffer_granule_map(g_dst_item, SLOT_RSI_CALL);
+	void *map_src = buffer_granule_map(g_src_item, SLOT_REC);
+	memcpy(map_dst, map_src, 4096);
+	buffer_unmap(map_dst);
+	buffer_unmap(map_src);
 
-	SWAP(item1->hash, item2->hash);
+	dst->hash = src->hash;
+
+	struct page_item *src_next = src->next;
+	if (src_next == dst) {
+		src_next = src_next->next;
+	}
+	if (src_next == src || src_next == dst) {
+		NOTICE("failed to copy item\n");
+		panic();
+	}
+	page_list_remove(src);
+	page_list_remove(dst);
+	page_list_add(src_next, dst);
 }
 
 static void
@@ -288,6 +297,15 @@ remap_page(struct page_item *item, uint64_t pa)
 	buffer_unmap(rec);
 }
 
+__attribute__((unused)) static void
+debug_state(void)
+{
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
+		NOTICE("---- ipa=%lx pa=%lx hash=%lx merged=%d\n",
+			item->ipa, item->pa, item->hash, item->merged);
+	}
+}
+
 void
 smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 {
@@ -304,7 +322,7 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 		goto out;
 	}
 
-	swap_items(copied_from_item, copied_to_item);
+	copy_and_eject_item(copied_to_item, copied_from_item);
 
 	remap_page(copied_to_item, merged_item->pa);
 	remap_page(copied_from_item, copied_to_item->pa);
@@ -317,8 +335,9 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
 	res->x[1] = copied_from_item->pa;
-	page_list_remove(copied_from_item);
 	myalloc_free(copied_from_item);
+
+	// debug_state();
 
 	res->x[0] = RMI_SUCCESS;
 out:
