@@ -13,7 +13,7 @@ arm_config_option_override(NAME RMM_TOOLCHAIN DEFAULT "gnu")
 # Set RMM_MAX_SIZE for this platform (40MB).  Needs to be kept in sync with
 # TF-A's REALM_DRAM_SIZE in platform_def.h.
 #
-arm_config_option_override(NAME RMM_MAX_SIZE DEFAULT 0x02800000)
+arm_config_option_override(NAME RMM_MAX_SIZE DEFAULT 0x08000000)
 
 # Maximum number of translation tables allocated by the runtime context
 # for the translation library.
