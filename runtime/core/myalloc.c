@@ -24,6 +24,7 @@
 #include <memory_alloc.h>
 #include <sizes.h>
 #include <string.h>
+#include <merge.h>
 
 #define MAGIC1 UL(0xFF00AA55)
 #define MAGIC2 UL(0xEE119966)
@@ -225,12 +226,15 @@ mymalloc_init(unsigned char *buf, size_t len)
 	myctx.first_free = myctx.first;
 }
 
+#define MAX_MERGEABLE_SIZE (3ull * 1024 * 1024 * 1024)
+#define REQUIRED_ALLOC_SIZE (MAX_MERGEABLE_SIZE * sizeof(struct page_item) / 4096)
+
 void *
 myalloc_alloc(size_t n, size_t size)
 {
 	static bool inited = false;
 	if (!inited) {
-		static unsigned char buf[20000000];
+		static unsigned char buf[REQUIRED_ALLOC_SIZE];
 		mymalloc_init(buf, sizeof(buf));
 		inited = true;
 	}

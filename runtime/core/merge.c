@@ -15,17 +15,6 @@
 
 static spinlock_t lock;
 
-struct page_item {
-	uint64_t ipa;
-	uint64_t pa;
-	uint64_t hash;
-	uint64_t ms;
-	// TODO revoke rec on realm destruction
-	struct granule *g_rec;
-	struct page_item *prev, *next;
-	bool merged;
-};
-
 struct page_item mergeable = {.prev = &mergeable, .next = &mergeable};
 
 static inline void

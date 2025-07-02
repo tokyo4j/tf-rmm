@@ -2,6 +2,18 @@
 #define MERGE_H
 
 #include <stdint.h>
+#include <stdbool.h>
+
+struct page_item {
+	uint64_t ipa;
+	uint64_t pa;
+	uint64_t hash;
+	uint64_t ms;
+	// TODO revoke rec on realm destruction
+	struct granule *g_rec;
+	struct page_item *prev, *next;
+	bool merged;
+};
 
 struct rec;
 struct rsi_result;
