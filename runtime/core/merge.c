@@ -31,6 +31,8 @@ page_list_remove(struct page_item *item)
 {
 	item->prev->next = item->next;
 	item->next->prev = item->prev;
+	item->prev = NULL;
+	item->next = NULL;
 }
 
 static uint64_t
@@ -69,6 +71,13 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	uint64_t pa = s2tte_pa(s2_ctx, s2tte, wi.last_level);
 	struct granule *grn = find_granule(pa);
 
+	PAGE_LIST_FOR_EACH(&mergeable, item) {
+		if (item->pa == pa) {
+			NOTICE("set_page_mergeable(): Duplicated pa=%lx\n", pa);
+			goto out;
+		}
+	}
+
 	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
 	uint64_t hash = hash_page((uint64_t *)mapped_page);
 	buffer_unmap(mapped_page);
@@ -78,9 +87,6 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	s2tte = (s2tte & ~ap_mask) | ap_ro;
 	s2tte_write(&s2tt[wi.index], s2tte);
 	s2tt_invalidate_page(s2_ctx, ipa);
-
-	buffer_unmap(s2tt);
-	granule_unlock(wi.g_llt);
 
 	struct page_item *insert_before = &mergeable;
 	PAGE_LIST_FOR_EACH(&mergeable, item) {
@@ -104,16 +110,20 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 
 	// insert before the first item with larger hash
 	page_list_add(insert_before, new_item);
+
+out:
+	buffer_unmap(s2tt);
+	granule_unlock(wi.g_llt);
 }
 
 void
 handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 {
 	spinlock_acquire(&lock);
-	// NOTICE("handle_rsi_set_pages_mergeable start\n");
 
 	uint64_t ipa_start = rec->regs[1];
 	uint64_t len = rec->regs[2];
+	// NOTICE("handle_rsi_set_pages_mergeable(): ipa_start=%lx, len=%lx\n", ipa_start, len);
 	for (uint64_t ipa = ipa_start; ipa < ipa_start + len; ipa += 4096) {
 		set_page_mergeable(rec, ipa);
 	}
@@ -146,7 +156,7 @@ items_identical(struct page_item *item1, struct page_item *item2)
 	map2 = NULL;
 
 	if (!equal) {
-		NOTICE("Hash matched but not identical pages\n");
+		NOTICE("hash collision pa1=%lx pa2=%lx\n", item1->pa, item2->pa);
 	}
 
 	return equal;
@@ -163,8 +173,8 @@ rand(void)
 }
 
 static bool
-find_duplicated_items(
-	struct page_item **copied_to_item, struct page_item **merged_item)
+find_duplicated_items(struct page_item **copied_to_item,
+		struct page_item **merged_item)
 {
 	uint64_t now = get_time_ms();
 	const uint64_t second = 1000000000;
@@ -178,9 +188,9 @@ find_duplicated_items(
 		}
 
 		if ((!prev_item->merged || !item->merged)
-			&& items_identical(prev_item, item)
-			&& now - prev_item->ms > time_threshold
-			&& now - item->ms > time_threshold) {
+				&& items_identical(prev_item, item)
+				&& now - prev_item->ms > time_threshold
+				&& now - item->ms > time_threshold) {
 			if (!prev_item->merged) {
 				*copied_to_item = prev_item;
 				*merged_item = item;
@@ -197,8 +207,8 @@ find_duplicated_items(
 }
 
 static struct page_item *
-find_copied_from_item(
-	struct page_item *ignored_item1, struct page_item *ignored_item2)
+find_copied_from_item(struct page_item *ignored_item1,
+		struct page_item *ignored_item2)
 {
 	uint32_t i = 0;
 	PAGE_LIST_FOR_EACH(&mergeable, item) {
@@ -287,20 +297,17 @@ debug_state(void)
 	}
 }
 
-void
-smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
+static uint64_t
+reclaim_page(void)
 {
-	spinlock_acquire(&lock);
-	res->x[0] = 1;
-
 	struct page_item *copied_to_item, *merged_item;
 	if (!find_duplicated_items(&copied_to_item, &merged_item)) {
-		goto out;
+		return 0;
 	}
 	struct page_item *copied_from_item =
 		find_copied_from_item(copied_to_item, merged_item);
 	if (!copied_from_item) {
-		goto out;
+		return 0;
 	}
 
 	copy_and_eject_item(copied_to_item, copied_from_item);
@@ -315,12 +322,40 @@ smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res)
 	rmm_el3_ifc_gtsi_undelegate(copied_from_item->pa);
 	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
-	res->x[1] = copied_from_item->pa;
+	uint64_t pa = copied_from_item->pa;
 	myalloc_free(copied_from_item);
 
-	// debug_state();
+	return pa;
+}
 
+void
+smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
+{
+	spinlock_acquire(&lock);
+	// NOTICE("smc_reclaim_mergeable_page(): pa=%lx\n", pa_array_addr);
+
+	static uint64_t pa_array[512];
+	memset(pa_array, 0, sizeof(pa_array));
+
+	int i;
+	for (i = 0; i < 512; i++) {
+		uint64_t pa = reclaim_page();
+		if (!pa) {
+			break;
+		}
+		pa_array[i] = pa;
+		res->x[1] = pa;
+		break; // TODO: remove
+	}
+	if (i == 0) {
+		res->x[0] = 1;
+		goto out;
+	}
+
+	struct granule *g = find_granule(pa_array_addr);
+	ns_buffer_write(SLOT_NS, g, 0, 4096, pa_array);
 	res->x[0] = RMI_SUCCESS;
+
 out:
 	spinlock_release(&lock);
 }
