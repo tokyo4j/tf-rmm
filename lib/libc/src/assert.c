@@ -19,9 +19,7 @@ __dead2 void __assert_func(const char *file, int line,
 __dead2 void __assert_fail(const char *expression, const char *file,
 			   unsigned int line, const char *func)
 {
-	/* Ignore func as it can be NULL */
-	(void)func;
-	ERROR("Assertion \"%s\" failed %s:%d\n", expression, file, line);
+	ERROR("Assertion \"%s\" failed %s:%d func:%s\n", expression, file, line, func ? func : "?");
 	while (true) {
 		wfe();
 	}

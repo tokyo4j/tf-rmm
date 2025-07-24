@@ -19,6 +19,9 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <merge.h>
+#include <debug.h>
+
 /*
  * Validate the map_addr value passed to RMI_RTT_* and RMI_DATA_* commands.
  */
@@ -1043,6 +1046,13 @@ void smc_data_destroy(unsigned long rd_addr,
 	unsigned long data_addr, s2tte, *s2tt;
 	struct rd *rd;
 	struct s2tt_context s2_ctx;
+
+    // NOTICE("smc_data_destroy(): map_addr=%lx\n", map_addr);
+    if (merge_handle_data_destroy(map_addr)) {
+        res->x[0] = RMI_ERROR_INPUT;
+		res->x[2] = 0UL;
+		return;
+    }
 
 	g_rd = find_lock_granule(rd_addr, GRANULE_STATE_RD);
 	if (g_rd == NULL) {

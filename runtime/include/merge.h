@@ -23,4 +23,6 @@ void handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res);
 
 void smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res);
 
+bool merge_handle_data_destroy(uint64_t pa);
+
 #endif
