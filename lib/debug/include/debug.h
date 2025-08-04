@@ -90,14 +90,21 @@
 	do {				\
 	} while (true)
 
+#include <spinlock.h>
+extern spinlock_t log_lock;
+
 __attribute__((__format__(__printf__, 1, 2)))
 static inline void rmm_log(const char *fmt, ...)
 {
 	va_list args;
 
+	spinlock_acquire(&log_lock);
+
 	va_start(args, fmt);
 	(void)vprintf(fmt, args);
 	va_end(args);
+
+	spinlock_release(&log_lock);
 }
 
 void backtrace(uintptr_t frame_pointer);

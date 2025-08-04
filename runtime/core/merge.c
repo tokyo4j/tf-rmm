@@ -14,6 +14,7 @@
 #include <utils_def.h>
 
 static spinlock_t lock;
+spinlock_t log_lock;
 
 struct page_item mergeable_pages = {.prev = &mergeable_pages, .next = &mergeable_pages};
 struct page_item reclaimed_pages = {.prev = &reclaimed_pages, .next = &reclaimed_pages};
