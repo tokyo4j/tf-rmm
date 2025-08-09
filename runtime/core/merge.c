@@ -4,7 +4,6 @@
 #include <granule.h>
 #include <measurement.h>
 #include <merge.h>
-#include <myalloc.h>
 #include <realm.h>
 #include <rmm_el3_ifc.h>
 #include <rsi-handler.h>
@@ -12,6 +11,19 @@
 #include <smc.h>
 #include <string.h>
 #include <utils_def.h>
+
+#define NR_MAX_PAGES (3ull * 1024 * 1024 * 1024 / 4096)
+
+static struct page_item *
+alloc_page_item(void) {
+	static struct page_item pages[NR_MAX_PAGES];
+	static uint64_t next_free_page_idx = 0;
+
+	if (next_free_page_idx >= NR_MAX_PAGES) {
+		return NULL;
+	}
+	return &pages[next_free_page_idx++];
+}
 
 static spinlock_t lock;
 spinlock_t log_lock;
@@ -123,7 +135,7 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 		}
 	}
 
-	struct page_item *new_item = myalloc_alloc(1, sizeof(*new_item));
+	struct page_item *new_item = alloc_page_item();
 	if (!new_item) {
 		NOTICE("OUT OF MEMORY\n");
 		panic();
