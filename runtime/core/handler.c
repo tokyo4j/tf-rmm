@@ -189,7 +189,8 @@ static const struct smc_handler smc_handlers[] = {
 	HANDLER(MEC_SET_SHARED,		0, 0, NULL,			 true, true),
 	HANDLER(MEC_SET_PRIVATE,	0, 0, NULL,			 true, true),
 	HANDLER(VDEV_COMPLETE,		0, 0, NULL,			 true, true),
-	HANDLER(RECLAIM_MERGEABLE_PAGE,	1, 1, smc_reclaim_mergeable_page, true, true)
+	HANDLER(RECLAIM_MERGEABLE_PAGE,	1, 1, smc_reclaim_mergeable_page, true, true),
+	HANDLER(ACK_SET_PAGES_UNMERGEABLE, 3, 1, smc_ack_set_pages_unmergeable, true, true),
 };
 
 COMPILER_ASSERT(ARRAY_SIZE(smc_handlers) == SMC64_NUM_FIDS_IN_RANGE(RMI));

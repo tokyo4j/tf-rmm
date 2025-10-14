@@ -228,6 +228,7 @@ struct rec {
 
 	REG_TYPE regs[RMM_REC_SAVED_GEN_REG_COUNT];
 	REG_TYPE sp_el0;
+	REG_TYPE pending_unmerge_ipa;
 
 #ifndef CBMC
 	/*

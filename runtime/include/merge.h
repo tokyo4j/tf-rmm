@@ -18,8 +18,15 @@ struct page_item {
 struct rec;
 struct rsi_result;
 struct smc_result;
+struct rmi_rec_exit;
 
 void handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res);
+
+void handle_rsi_set_pages_unmergeable(struct rec *rec,
+	struct rmi_rec_exit *rec_exit, struct rsi_result *res);
+
+void smc_ack_set_pages_unmergeable(unsigned long rec_pa, unsigned long pages_pa,
+	unsigned long unused, struct smc_result *res);
 
 void smc_reclaim_mergeable_page(unsigned long index, struct smc_result *res);
 

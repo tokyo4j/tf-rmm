@@ -169,6 +169,38 @@ handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 	spinlock_release(&lock);
 }
 
+void
+handle_rsi_set_pages_unmergeable(struct rec *rec,
+		struct rmi_rec_exit *rec_exit, struct rsi_result *res)
+{
+	spinlock_acquire(&lock);
+
+	if (rec->pending_unmerge_ipa) {
+		spinlock_release(&lock);
+		NOTICE("handle_rsi_set_pages_unmergeable(): unmerge request pending\n");
+		return;
+	}
+
+	uint64_t ipa_start = rec->regs[1];
+	uint64_t len = rec->regs[2];
+
+	res->action = UPDATE_REC_EXIT_TO_HOST;
+	rec->pending_unmerge_ipa = ipa_start;
+	rec_exit->gprs[0] = len;
+	rec_exit->exit_reason = RMI_EXIT_UNMERGE_ALLOC;
+
+	spinlock_release(&lock);
+}
+
+void
+smc_ack_set_pages_unmergeable(unsigned long rec_pa, unsigned long pages_pa,
+	unsigned long unused, struct smc_result *res)
+{
+	// struct granule *g_rec = find_granule(rec_pa);
+	// struct rec *rec = buffer_granule_map(g_rec, SLOT_REC);
+	// uint64_t ipa_start = rec->pending_unmerge_ipa;
+}
+
 static bool
 items_identical(struct page_item *item1, struct page_item *item2)
 {

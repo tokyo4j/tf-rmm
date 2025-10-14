@@ -137,6 +137,7 @@
 #define RMI_EXIT_RTT_REQUEST		U(8)
 #define RMI_EXIT_S2AP_CHANGE		U(9)
 #define RMI_EXIT_VDEV_REQUEST		U(10)
+#define RMI_EXIT_UNMERGE_ALLOC		U(11)
 
 /* RmiRttEntryState represents the state of an RTTE */
 #define RMI_UNASSIGNED		UL(0)
@@ -612,6 +613,11 @@
  * FID: 0xC400018F
  */
 #define SMC_RMI_RECLAIM_MERGEABLE_PAGE		SMC64_RMI_FID(U(0x3F))
+
+/*
+ * FID: 0xC4000190
+ */
+#define SMC_RMI_ACK_SET_PAGES_UNMERGEABLE	SMC64_RMI_FID(U(0x40))
 
 /* Size of Realm Personalization Value */
 #ifndef CBMC
