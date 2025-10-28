@@ -25,27 +25,14 @@ alloc_page_item(void) {
 	return &pages[next_free_page_idx++];
 }
 
-static spinlock_t lock;
 spinlock_t log_lock;
 
-struct page_item mergeable_pages = {.prev = &mergeable_pages, .next = &mergeable_pages};
-struct page_item reclaimed_pages = {.prev = &reclaimed_pages, .next = &reclaimed_pages};
-
-static inline void
-page_list_add(struct page_item *list, struct page_item *item)
-{
-	item->prev = list->prev;
-	item->next = list;
-	list->prev->next = item;
-	list->prev = item;
-}
-
-static inline void
-page_list_remove(struct page_item *item)
-{
-	item->prev->next = item->next;
-	item->next->prev = item->prev;
-}
+static struct ctx {
+	struct rb_tree mergeable_pages;
+	struct rb_tree reclaimed_pages; // for debugging
+	struct rb_node *iter_next;
+	spinlock_t lock;
+} _ctx;
 
 static uint64_t
 hash_page(uint64_t *p)
@@ -59,50 +46,25 @@ hash_page(uint64_t *p)
 }
 
 static uint64_t
-get_time_ms(void)
+get_time_ns(void)
 {
 	uint64_t ms;
 	asm volatile("mrs %0, cntvct_el0" : "=r"(ms));
 	return ms;
 }
 
-#define PAGE_LIST_FOR_EACH(list, item)                                         \
-	for (struct page_item * (item) = (list)->next; (item) != (list);       \
-		(item) = (item)->next)
-
-__attribute__((unused)) static void
-debug_state(struct page_item *copied_to, struct page_item *merged, struct page_item *copied_from)
-{
-	NOTICE("-------------------------------------------\n");
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		NOTICE("---- rec=%p ipa=%lx pa=%lx hash=%lx merged=%d ",
-			item->g_rec, item->ipa, item->pa, item->hash, item->merged);
-		if (item == copied_to) {
-			NOTICE("[copied_to]   ");
-		} else if (item == merged) {
-			NOTICE("[merged]      ");
-		} else if (item == copied_from) {
-			NOTICE("[copied_from] ");
-		} else {
-			NOTICE("              ");
-		}
-
-		char *map = buffer_granule_map(find_granule(item->pa), SLOT_RSI_CALL);
-		if (*map == 0) {
-			NOTICE("content=");
-			for (int i = 0; i < 4096; i++) {
-				NOTICE("%x", map[i]);
-			}
-			NOTICE("\n");
-		} else {
-			NOTICE("content=%s\n", map);
-		}
-		buffer_unmap(map);
+static inline struct page_item *
+rb2item(struct rb_node *node) {
+	if (node) {
+		return (struct page_item *)(
+			(char *)node - __builtin_offsetof(struct page_item, rb));
+	} else {
+		return NULL;
 	}
 }
 
 static void
-set_page_mergeable(struct rec *rec, uint64_t ipa)
+set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 {
 	struct s2tt_walk wi;
 	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
@@ -112,11 +74,6 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
 	uint64_t s2tte = s2tte_read(&s2tt[wi.index]);
 	uint64_t pa = s2tte_pa(s2_ctx, s2tte, wi.last_level);
-	struct granule *grn = find_granule(pa);
-
-	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
-	uint64_t hash = hash_page((uint64_t *)mapped_page);
-	buffer_unmap(mapped_page);
 
 	const uint64_t ap_mask = 3ull << 6;
 	const uint64_t ap_ro = 1ull << 6;
@@ -127,74 +84,46 @@ set_page_mergeable(struct rec *rec, uint64_t ipa)
 	buffer_unmap(s2tt);
 	granule_unlock(wi.g_llt);
 
-	struct page_item *insert_before = &mergeable_pages;
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		if (item->hash >= hash) {
-			insert_before = item;
-			break;
-		}
-	}
-
 	struct page_item *new_item = alloc_page_item();
 	if (!new_item) {
 		NOTICE("OUT OF MEMORY\n");
 		panic();
 	}
+
+	struct granule *grn = find_granule(pa);
+	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
+	new_item->rb.hash = hash_page((uint64_t *)mapped_page);
+	buffer_unmap(mapped_page);
+
 	new_item->ipa = ipa;
 	new_item->pa = pa;
-	new_item->hash = hash;
 	new_item->g_rec = rec->g_rec;
-	new_item->ms = get_time_ms();
-
-	// insert before the first item with larger hash
-	page_list_add(insert_before, new_item);
+	new_item->ns = get_time_ns();
+	rb_insert(&ctx->mergeable_pages, &new_item->rb);
 }
 
 void
 handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 {
-	spinlock_acquire(&lock);
+	struct ctx *ctx = &_ctx;
+	spinlock_acquire(&ctx->lock);
 
 	uint64_t ipa_start = rec->regs[1];
 	uint64_t len = rec->regs[2];
+
+	uint64_t start_ns = get_time_ns();
+
 	for (uint64_t ipa = ipa_start; ipa < ipa_start + len; ipa += 4096) {
-		set_page_mergeable(rec, ipa);
+		set_page_mergeable(ctx, rec, ipa);
 	}
 
 	res->action = UPDATE_REC_RETURN_TO_REALM;
 	res->smc_res.x[0] = RSI_SUCCESS;
 
-	// debug_state(NULL, NULL, NULL);
+	// while (get_time_ns() - start_ns < 10000000);
+	NOTICE("handle_rsi_set_pages_mergeable():ns,len= %ld %ld\n", get_time_ns() - start_ns, len / 4096);
 
-	spinlock_release(&lock);
-}
-
-static bool
-items_identical(struct page_item *item1, struct page_item *item2)
-{
-	if (item1->hash != item2->hash) {
-		return false;
-	}
-
-	/* TODO: lock granule? */
-	struct granule *granule1 = find_granule(item1->pa);
-	unsigned char *map1 = buffer_granule_map(granule1, SLOT_RSI_CALL);
-	unsigned char buf1[4096];
-	memcpy(buf1, map1, sizeof(buf1));
-	buffer_unmap(map1);
-	map1 = NULL;
-
-	struct granule *granule2 = find_granule(item2->pa);
-	unsigned char *map2 = buffer_granule_map(granule2, SLOT_RSI_CALL);
-	bool equal = memcmp(map2, buf1, sizeof(buf1)) == 0;
-	buffer_unmap(map2);
-	map2 = NULL;
-
-	if (!equal) {
-		NOTICE("Hash matched but not identical pages\n");
-	}
-
-	return equal;
+	spinlock_release(&ctx->lock);
 }
 
 static uint32_t
@@ -207,75 +136,96 @@ rand(void)
 	return x;
 }
 
-static bool
-find_duplicated_items(
-	struct page_item **copied_to_item, struct page_item **merged_item)
+static struct page_item *
+get_scanned_item(struct ctx *ctx)
 {
-	uint64_t now = get_time_ms();
-	const uint64_t second = 1000000000;
-	uint64_t time_threshold = 5 * second + 5 * second * (uint64_t)rand() / UINT32_MAX;
+	struct page_item *item = NULL;
 
-	struct page_item *prev_item = NULL;
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		if (!prev_item) {
-			prev_item = item;
-			continue;
+	if (ctx->iter_next) {
+		item = rb2item(ctx->iter_next);
+	} else {
+		item = rb2item(rb_min(ctx->mergeable_pages.root));
+		if (!item) {
+			return NULL;
 		}
-
-		if ((!prev_item->merged || !item->merged)
-				&& items_identical(prev_item, item)
-				&& now - prev_item->ms > time_threshold
-				&& now - item->ms > time_threshold) {
-			if (!prev_item->merged) {
-				*copied_to_item = prev_item;
-				*merged_item = item;
-			} else {
-				*copied_to_item = item;
-				*merged_item = prev_item;
-			}
-			return true;
-		}
-
-		prev_item = item;
 	}
-	return false;
+	ctx->iter_next = rb_get_next(&item->rb);
+	return item;
 }
 
 static struct page_item *
-find_copied_from_item(
-	struct page_item *ignored_item1, struct page_item *ignored_item2)
+find_dup(struct rb_tree *merged_map, struct page_item *item, char *content)
 {
-	uint32_t i = 0;
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		if (item == ignored_item1 || item == ignored_item2 || item->merged) {
-			continue;
-		}
-		i++;
-	}
+	uint64_t now = get_time_ns();
+	const uint64_t second = 1000000000;
+	uint64_t time_thr = 5 * second + 5 * second * (uint64_t)rand() / UINT32_MAX;
 
-	if (i == 0) {
+	struct rb_node *dup_node = rb_find(merged_map, item->rb.hash);
+	if (!dup_node) {
 		return NULL;
 	}
 
-	uint32_t migrated_item_idx = rand() % i;
-
-	i = 0;
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		if (item == ignored_item1 || item == ignored_item2 || item->merged) {
+	do {
+		struct page_item *dup_item = rb2item(dup_node);
+		if (dup_item == item) {
 			continue;
 		}
-		if (migrated_item_idx == i) {
-			return item;
+		if (now - dup_item->ns < time_thr) {
+			continue;
 		}
-		i++;
+		struct granule *grn = find_granule(dup_item->pa);
+		char *mapped_page = buffer_granule_map(grn, SLOT_REC);
+		bool eq = memcmp(mapped_page, content, 4096) == 0;
+		buffer_unmap(mapped_page);
+		if (eq) {
+			return dup_item;
+		}
+	} while ((dup_node = dup_node->next) != NULL);
+
+	return NULL;
+}
+
+static struct page_item *
+find_dup_item(struct rb_tree *mergeable_pages, struct page_item *item)
+{
+	struct granule *grn = find_granule(item->pa);
+	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
+
+	uint64_t hash = hash_page((uint64_t *)mapped_page);
+	if (hash != item->rb.hash) {
+		NOTICE("hash unmatch");
+		panic();
 	}
 
-	panic();
+	struct page_item *dup_item = find_dup(mergeable_pages, item, mapped_page);
+	buffer_unmap(mapped_page);
+	if (!dup_item) {
+		return NULL;
+	}
+	return dup_item;
+}
+
+static struct page_item *
+pick_random_item(struct rb_tree *map)
+{
+	struct rb_node *node = map->root;
+	while (1) {
+		struct rb_node *next;
+		if (rand() % 2) {
+			next = node->h.left;
+		} else {
+			next = node->h.right;
+		}
+		if (!next) {
+			return rb2item(node);
+		}
+		node = next;
+	}
 	return NULL;
 }
 
 static void
-copy_and_eject_item(struct page_item *dst, struct page_item *src)
+copy_page(struct page_item *dst, struct page_item *src)
 {
 	struct granule *g_dst_item = find_granule(dst->pa);
 	struct granule *g_src_item = find_granule(src->pa);
@@ -284,20 +234,6 @@ copy_and_eject_item(struct page_item *dst, struct page_item *src)
 	memcpy(map_dst, map_src, 4096);
 	buffer_unmap(map_dst);
 	buffer_unmap(map_src);
-
-	dst->hash = src->hash;
-
-	struct page_item *src_next = src->next;
-	if (src_next == dst) {
-		src_next = src_next->next;
-	}
-	if (src_next == src || src_next == dst) {
-		NOTICE("failed to copy item\n");
-		panic();
-	}
-	page_list_remove(src);
-	page_list_remove(dst);
-	page_list_add(src_next, dst);
 }
 
 static void
@@ -333,35 +269,61 @@ remap_page(struct page_item *item, uint64_t pa)
 }
 
 static uint64_t
-reclaim_page(void)
+reclaim_page(struct ctx *ctx)
 {
-	struct page_item *copied_to_item, *merged_item;
-	if (!find_duplicated_items(&copied_to_item, &merged_item)) {
+	struct page_item *scan_item = get_scanned_item(ctx);
+	if (!scan_item) {
+		// NOTICE("scan_item not found\n");
 		return 0;
 	}
-	struct page_item *copied_from_item =
-		find_copied_from_item(copied_to_item, merged_item);
-	if (!copied_from_item) {
+	// NOTICE("scan_item=%8lx(%lx)\n", (uint64_t)&scan_item->rb, scan_item->rb.hash);
+	struct page_item *dup_item =
+		find_dup_item(&ctx->mergeable_pages, scan_item);
+	if (!dup_item) {
+		// NOTICE("dup_item not found\n");
 		return 0;
 	}
-	// NOTICE("-- copied_to_item=%lx merged_item=%lx copied_from_item=%lx\n",
-	// 	copied_to_item->pa, merged_item->pa, copied_from_item->pa);
-	// debug_state(copied_to_item, merged_item, copied_from_item);
-	copy_and_eject_item(copied_to_item, copied_from_item);
+	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.hash);
 
-	remap_page(copied_to_item, merged_item->pa);
-	remap_page(copied_from_item, copied_to_item->pa);
-	copied_to_item->ipa = copied_from_item->ipa;
-	copied_to_item->g_rec = copied_from_item->g_rec;
-	merged_item->merged = true;
+	struct page_item *rand_item = NULL;
+	for (int i = 0; i < 5; i++) {
+		rand_item = pick_random_item(&ctx->mergeable_pages);
+		if (rand_item == scan_item || rand_item == dup_item
+				|| rand_item->merged) {
+			rand_item = NULL;
+		}
+		if (rand_item) {
+			break;
+		}
+	}
+	if (!rand_item) {
+		// NOTICE("rand_item not found\n");
+		return 0;
+	}
+	// NOTICE("rand_item=%8lx(%lx)\n", (uint64_t)&rand_item->rb, rand_item->rb.hash);
+	while (ctx->iter_next == &dup_item->rb
+			|| ctx->iter_next == &rand_item->rb) {
+		get_scanned_item(ctx);
+	}
+	rb_delete(&ctx->mergeable_pages, &dup_item->rb);
+	rb_delete(&ctx->mergeable_pages, &rand_item->rb);
 
-	struct granule *granule = find_granule(copied_from_item->pa);
+	dup_item->rb.hash = rand_item->rb.hash;
+	copy_page(dup_item, rand_item);
+	remap_page(dup_item, scan_item->pa);
+	remap_page(rand_item, dup_item->pa);
+	dup_item->ipa = rand_item->ipa;
+	dup_item->g_rec = rand_item->g_rec;
+	scan_item->merged = true;
+	rb_insert(&ctx->mergeable_pages, &dup_item->rb);
+
+	struct granule *granule = find_granule(rand_item->pa);
 	granule_lock(granule, GRANULE_STATE_DATA);
-	rmm_el3_ifc_gtsi_undelegate(copied_from_item->pa);
+	rmm_el3_ifc_gtsi_undelegate(rand_item->pa);
 	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
-	uint64_t pa = copied_from_item->pa;
-	page_list_add(&reclaimed_pages, copied_from_item);
+	uint64_t pa = rand_item->pa;
+	rb_insert(&ctx->reclaimed_pages, &rand_item->rb);
 	// myalloc_free(copied_from_item);
 
 	return pa;
@@ -370,15 +332,18 @@ reclaim_page(void)
 void
 smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 {
-	spinlock_acquire(&lock);
+	struct ctx *ctx = &_ctx;
+	spinlock_acquire(&ctx->lock);
 	// NOTICE("smc_reclaim_mergeable_page(): pa=%lx\n", pa_array_addr);
+
+	uint64_t start_ns = get_time_ns();
 
 	static uint64_t pa_array[512];
 	memset(pa_array, 0, sizeof(pa_array));
 
 	int i;
 	for (i = 0; i < 512; i++) {
-		uint64_t pa = reclaim_page();
+		uint64_t pa = reclaim_page(ctx);
 		if (!pa) {
 			break;
 		}
@@ -394,36 +359,36 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	ns_buffer_write(SLOT_NS, g, 0, 4096, pa_array);
 	res->x[0] = RMI_SUCCESS;
 
+	// while (get_time_ns() - start_ns < 10000000);
+	NOTICE("smc_reclaim_mergeable_page():ns,i= %ld %d\n", get_time_ns() - start_ns, i);
+
 out:
-	// debug_state(NULL, NULL, NULL);
-	spinlock_release(&lock);
+	spinlock_release(&ctx->lock);
 }
 
 bool
 merge_handle_data_destroy(uint64_t ipa) {
-	spinlock_acquire(&lock);
+	struct ctx *ctx = &_ctx;
+	spinlock_acquire(&ctx->lock);
 
-	struct page_item *item_to_destroy = NULL;
-	PAGE_LIST_FOR_EACH(&mergeable_pages, item) {
-		if (item_to_destroy) {
-			page_list_remove(item_to_destroy);
-			item_to_destroy = NULL;
-		}
+	for (struct rb_node *node = rb_min(ctx->mergeable_pages.root);
+			node; node = rb_get_next(node)) {
+		struct page_item *item = rb2item(node);
 		if (item->ipa == ipa) {
-			if (item->merged) {
-				NOTICE("Tried to destroy merged page: ipa=%lx, pa=%lx\n", item->ipa, item->pa);
-				panic();
-			} else {
-				NOTICE("Destroying mergeable page: ipa=%lx, pa=%lx\n", item->ipa, item->pa);
-				item_to_destroy = item;
-			}
+			NOTICE("Tried to destroy mergeable page: ipa=%lx, pa=%lx merged=%d\n",
+				item->ipa, item->pa, item->merged);
 		}
 	}
-	PAGE_LIST_FOR_EACH(&reclaimed_pages, item) {
+
+	for (struct rb_node *node = rb_min(ctx->reclaimed_pages.root);
+			node; node = rb_get_next(node)) {
+		struct page_item *item = rb2item(node);
 		if (item->ipa == ipa) {
-			NOTICE("Destroyed reclaimed page: ipa=%lx, pa=%lx\n", item->ipa, item->pa);
+			NOTICE("Tried to destroy reclaimed page: ipa=%lx, pa=%lx merged=%d\n",
+				item->ipa, item->pa, item->merged);
 		}
 	}
-	spinlock_release(&lock);
+
+	spinlock_release(&ctx->lock);
 	return false;
 }

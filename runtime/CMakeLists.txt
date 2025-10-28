@@ -74,6 +74,7 @@ target_sources(rmm-runtime
             "core/init.c"
             "core/inject_exp.c"
             "core/merge.c"
+            "core/rbtree.c"
             "core/sysregs.c"
             "core/timers.c")
 

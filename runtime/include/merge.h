@@ -4,14 +4,42 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+struct rb_node {
+	uint64_t hash;
+	union {
+		struct {
+			struct rb_node *left;
+			struct rb_node *right;
+			struct rb_node *parent;
+		} h;
+		struct {
+			struct rb_node *head;
+		} c;
+	};
+	struct rb_node *next;
+	bool red;
+	bool chained;
+};
+
+struct rb_tree {
+	struct rb_node *root;
+	uint64_t size;
+};
+
+void rb_insert(struct rb_tree *map, struct rb_node *new_item);
+struct rb_node *rb_find(struct rb_tree *map, uint64_t hash);
+void rb_delete(struct rb_tree *map, struct rb_node *z);
+struct rb_node *rb_get_next(struct rb_node *iter);
+struct rb_node *rb_min(struct rb_node *node);
+void rb_print_node(struct rb_node *root, int space);
+
 struct page_item {
 	uint64_t ipa;
 	uint64_t pa;
-	uint64_t hash;
-	uint64_t ms;
+	uint64_t ns;
 	// TODO revoke rec on realm destruction
 	struct granule *g_rec;
-	struct page_item *prev, *next;
+	struct rb_node rb;
 	bool merged;
 };
 
