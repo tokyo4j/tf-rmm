@@ -280,8 +280,10 @@ rb_delete(struct rb_tree *map, struct rb_node *z)
 		map->size--;
 		return;
 	} else if (z->next) {
-		replace_ref(&z->h.parent->h.left, z, z->next);
-		replace_ref(&z->h.parent->h.right, z, z->next);
+		if (z->h.parent) {
+			replace_ref(&z->h.parent->h.left, z, z->next);
+			replace_ref(&z->h.parent->h.right, z, z->next);
+		}
 		if (z->h.left) {
 			replace_ref(&z->h.left->h.parent, z, z->next);
 		}
@@ -290,6 +292,9 @@ rb_delete(struct rb_tree *map, struct rb_node *z)
 		}
 		for (struct rb_node *n = z->next->next; n; n = n->next) {
 			n->c.head = z->next;
+		}
+		if (map->root == z) {
+			map->root = z->next;
 		}
 		z->next->chained = false;
 		z->next->h.parent = z->h.parent;

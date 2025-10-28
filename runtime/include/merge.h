@@ -33,14 +33,19 @@ struct rb_node *rb_get_next(struct rb_node *iter);
 struct rb_node *rb_min(struct rb_node *node);
 void rb_print_node(struct rb_node *root, int space);
 
-struct page_item {
+struct page_ref {
 	uint64_t ipa;
+	struct page_item *item;
+	struct granule *g_rec;
+	struct page_ref *next;
+};
+
+struct page_item {
+	struct page_ref *refs;
 	uint64_t pa;
 	uint64_t ns;
 	// TODO revoke rec on realm destruction
-	struct granule *g_rec;
 	struct rb_node rb;
-	bool merged;
 };
 
 struct rec;

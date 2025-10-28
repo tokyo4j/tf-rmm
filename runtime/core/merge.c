@@ -12,17 +12,18 @@
 #include <string.h>
 #include <utils_def.h>
 
-#define NR_MAX_PAGES (3ull * 1024 * 1024 * 1024 / 4096)
+static void *
+myalloc(uint64_t len) {
+	static char buf[0x3c00000];
+	static char *ptr = buf;
 
-static struct page_item *
-alloc_page_item(void) {
-	static struct page_item pages[NR_MAX_PAGES];
-	static uint64_t next_free_page_idx = 0;
-
-	if (next_free_page_idx >= NR_MAX_PAGES) {
+	if (ptr + len >= buf + sizeof(buf)) {
 		return NULL;
 	}
-	return &pages[next_free_page_idx++];
+
+	char *ret = ptr;
+	ptr += len;
+	return ret;
 }
 
 spinlock_t log_lock;
@@ -84,20 +85,24 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	buffer_unmap(s2tt);
 	granule_unlock(wi.g_llt);
 
-	struct page_item *new_item = alloc_page_item();
-	if (!new_item) {
+	struct page_ref *new_ref = myalloc(sizeof(*new_ref));
+	struct page_item *new_item = myalloc(sizeof(*new_item));
+	if (!new_ref || !new_item) {
 		NOTICE("OUT OF MEMORY\n");
 		panic();
 	}
+
+	new_ref->ipa = ipa;
+	new_ref->item = new_item;
+	new_ref->g_rec = rec->g_rec;
+	new_item->refs = new_ref;
 
 	struct granule *grn = find_granule(pa);
 	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
 	new_item->rb.hash = hash_page((uint64_t *)mapped_page);
 	buffer_unmap(mapped_page);
 
-	new_item->ipa = ipa;
 	new_item->pa = pa;
-	new_item->g_rec = rec->g_rec;
 	new_item->ns = get_time_ns();
 	rb_insert(&ctx->mergeable_pages, &new_item->rb);
 }
@@ -237,35 +242,60 @@ copy_page(struct page_item *dst, struct page_item *src)
 }
 
 static void
-remap_page(struct page_item *item, uint64_t pa)
+remap_page(struct page_item *dst, struct page_item *src)
 {
-	// NOTICE("remapping ipa:%lx -> pa:%lx\n", item->ipa, pa);
-	struct rec *rec = buffer_granule_map(item->g_rec, SLOT_REC);
-	struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
+	for (struct page_ref *ref = src->refs; ref; ref = ref->next) {
+		// NOTICE("remapping ipa:%lx -> pa:%lx\n", ref->ipa, dst->pa);
+		struct rec *rec = buffer_granule_map(ref->g_rec, SLOT_REC);
+		struct s2tt_context *s2_ctx = &rec->realm_info.s2_ctx;
 
-	struct s2tt_walk wi;
-	granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
-	s2tt_walk_lock_unlock(s2_ctx, item->ipa, S2TT_PAGE_LEVEL, &wi);
-	uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
+		struct s2tt_walk wi;
+		granule_lock(s2_ctx->g_rtt, GRANULE_STATE_RTT);
+		s2tt_walk_lock_unlock(s2_ctx, ref->ipa, S2TT_PAGE_LEVEL, &wi);
+		uint64_t *s2tt = buffer_granule_map(wi.g_llt, SLOT_RTT);
 
-	uint64_t s2tte = s2tt[wi.index];
+		uint64_t s2tte = s2tt[wi.index];
 
-	const uint64_t ap_mask = 3ull << 6;
-	const uint64_t ap_ro = 1ull << 6;
-	const uint64_t pa_mask = BIT_MASK_ULL(48, 12);
-	if ((s2tte & ap_mask) != ap_ro || (s2tte & pa_mask) != item->pa) {
-		NOTICE("invalid s2tte=%lx\n", s2tte);
-		panic();
+		const uint64_t ap_mask = 3ull << 6;
+		const uint64_t ap_ro = 1ull << 6;
+		const uint64_t pa_mask = BIT_MASK_ULL(48, 12);
+		if ((s2tte & ap_mask) != ap_ro || (s2tte & pa_mask) != src->pa) {
+			NOTICE("invalid s2tte=%lx\n", s2tte);
+			panic();
+		}
+
+		s2tte = (s2tte & ~pa_mask) | dst->pa;
+		s2tte_write(&s2tt[wi.index], s2tte);
+		s2tt_invalidate_page(s2_ctx, ref->ipa);
+
+		ref->item = dst;
+
+		granule_unlock(wi.g_llt);
+		buffer_unmap(s2tt);
+		buffer_unmap(rec);
 	}
 
-	s2tte = (s2tte & ~pa_mask) | pa;
-	s2tte_write(&s2tt[wi.index], s2tte);
+	struct page_ref **tail = &dst->refs;
+	while (*tail) {
+		tail = &(*tail)->next;
+	}
+	*tail = src->refs;
+	src->refs = NULL;
+}
 
-	s2tt_invalidate_page(s2_ctx, item->ipa);
-
-	granule_unlock(wi.g_llt);
-	buffer_unmap(s2tt);
-	buffer_unmap(rec);
+static void __attribute__((unused))
+dump_mappings(struct ctx *ctx)
+{
+	for (struct rb_node *node = rb_min(ctx->mergeable_pages.root);
+			node; node = rb_get_next(node)) {
+		for (struct rb_node *chain = node; chain; chain = chain->next) {
+			struct page_item *item = rb2item(chain);
+			NOTICE("pa=%lx, hash=%lx\n", item->pa, item->rb.hash);
+			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
+				NOTICE("        ipa=%lx\n", ref->ipa);
+			}
+		}
+	}
 }
 
 static uint64_t
@@ -288,8 +318,7 @@ reclaim_page(struct ctx *ctx)
 	struct page_item *rand_item = NULL;
 	for (int i = 0; i < 5; i++) {
 		rand_item = pick_random_item(&ctx->mergeable_pages);
-		if (rand_item == scan_item || rand_item == dup_item
-				|| rand_item->merged) {
+		if (rand_item == scan_item || rand_item == dup_item) {
 			rand_item = NULL;
 		}
 		if (rand_item) {
@@ -301,6 +330,7 @@ reclaim_page(struct ctx *ctx)
 		return 0;
 	}
 	// NOTICE("rand_item=%8lx(%lx)\n", (uint64_t)&rand_item->rb, rand_item->rb.hash);
+
 	while (ctx->iter_next == &dup_item->rb
 			|| ctx->iter_next == &rand_item->rb) {
 		get_scanned_item(ctx);
@@ -310,11 +340,8 @@ reclaim_page(struct ctx *ctx)
 
 	dup_item->rb.hash = rand_item->rb.hash;
 	copy_page(dup_item, rand_item);
-	remap_page(dup_item, scan_item->pa);
-	remap_page(rand_item, dup_item->pa);
-	dup_item->ipa = rand_item->ipa;
-	dup_item->g_rec = rand_item->g_rec;
-	scan_item->merged = true;
+	remap_page(scan_item, dup_item);
+	remap_page(dup_item, rand_item);
 	rb_insert(&ctx->mergeable_pages, &dup_item->rb);
 
 	struct granule *granule = find_granule(rand_item->pa);
@@ -373,19 +400,27 @@ merge_handle_data_destroy(uint64_t ipa) {
 
 	for (struct rb_node *node = rb_min(ctx->mergeable_pages.root);
 			node; node = rb_get_next(node)) {
-		struct page_item *item = rb2item(node);
-		if (item->ipa == ipa) {
-			NOTICE("Tried to destroy mergeable page: ipa=%lx, pa=%lx merged=%d\n",
-				item->ipa, item->pa, item->merged);
+		for (struct rb_node *chain = node; chain; chain = chain->next) {
+			struct page_item *item = rb2item(chain);
+			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
+				if (ref->ipa == ipa) {
+					NOTICE("Tried to destroy mergeable page: ipa=%lx, pa=%lx\n",
+						ref->ipa, item->pa);
+				}
+			}
 		}
 	}
 
 	for (struct rb_node *node = rb_min(ctx->reclaimed_pages.root);
 			node; node = rb_get_next(node)) {
-		struct page_item *item = rb2item(node);
-		if (item->ipa == ipa) {
-			NOTICE("Tried to destroy reclaimed page: ipa=%lx, pa=%lx merged=%d\n",
-				item->ipa, item->pa, item->merged);
+		for (struct rb_node *chain = node; chain; chain = chain->next) {
+			struct page_item *item = rb2item(chain);
+			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
+				if (ref->ipa == ipa) {
+					NOTICE("Tried to destroy reclaimed page: ipa=%lx, pa=%lx\n",
+						ref->ipa, item->pa);
+				}
+			}
 		}
 	}
 
