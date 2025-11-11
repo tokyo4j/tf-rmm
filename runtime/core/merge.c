@@ -125,8 +125,8 @@ handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 	res->action = UPDATE_REC_RETURN_TO_REALM;
 	res->smc_res.x[0] = RSI_SUCCESS;
 
-	// while (get_time_ns() - start_ns < 10000000);
-	NOTICE("handle_rsi_set_pages_mergeable():ns,len= %ld %ld\n", get_time_ns() - start_ns, len / 4096);
+	while (get_time_ns() - start_ns < 500000 * (len / 4096));
+	// NOTICE("handle_rsi_set_pages_mergeable():ns,len= %ld %ld\n", get_time_ns() - start_ns, len / 4096);
 
 	spinlock_release(&ctx->lock);
 }
@@ -386,8 +386,8 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	ns_buffer_write(SLOT_NS, g, 0, 4096, pa_array);
 	res->x[0] = RMI_SUCCESS;
 
-	// while (get_time_ns() - start_ns < 10000000);
-	NOTICE("smc_reclaim_mergeable_page():ns,i= %ld %d\n", get_time_ns() - start_ns, i);
+	while (get_time_ns() - start_ns < (uint64_t)i * 800000);
+	// NOTICE("smc_reclaim_mergeable_page():ns,i= %ld %d\n", get_time_ns() - start_ns, i);
 
 out:
 	spinlock_release(&ctx->lock);
