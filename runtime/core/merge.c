@@ -64,6 +64,16 @@ rb2item(struct rb_node *node) {
 	}
 }
 
+static uint32_t
+rand(void)
+{
+	static uint32_t x = 123456;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	return x;
+}
+
 static void
 set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 {
@@ -103,7 +113,11 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	buffer_unmap(mapped_page);
 
 	new_item->pa = pa;
-	new_item->ns = get_time_ns();
+
+	const uint64_t second = 1000000000;
+	uint64_t time_thr = 30 * second + 10 * second * (uint64_t)rand() / (uint64_t)UINT32_MAX;
+	new_item->ns = get_time_ns() + time_thr;
+	NOTICE("new_item->ns=%ld\n", new_item->ns);
 	rb_insert(&ctx->mergeable_pages, &new_item->rb);
 }
 
@@ -131,16 +145,6 @@ handle_rsi_set_pages_mergeable(struct rec *rec, struct rsi_result *res)
 	spinlock_release(&ctx->lock);
 }
 
-static uint32_t
-rand(void)
-{
-	static uint32_t x = 123456;
-	x ^= x << 13;
-	x ^= x >> 17;
-	x ^= x << 5;
-	return x;
-}
-
 static struct page_item *
 get_scanned_item(struct ctx *ctx)
 {
@@ -162,8 +166,6 @@ static struct page_item *
 find_dup(struct rb_tree *merged_map, struct page_item *item, char *content)
 {
 	uint64_t now = get_time_ns();
-	const uint64_t second = 1000000000;
-	uint64_t time_thr = 5 * second + 5 * second * (uint64_t)rand() / UINT32_MAX;
 
 	struct rb_node *dup_node = rb_find(merged_map, item->rb.hash);
 	if (!dup_node) {
@@ -175,7 +177,7 @@ find_dup(struct rb_tree *merged_map, struct page_item *item, char *content)
 		if (dup_item == item) {
 			continue;
 		}
-		if (now - dup_item->ns < time_thr) {
+		if (now < dup_item->ns) {
 			continue;
 		}
 		struct granule *grn = find_granule(dup_item->pa);
