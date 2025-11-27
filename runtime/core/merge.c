@@ -29,8 +29,8 @@ myalloc(uint64_t len) {
 spinlock_t log_lock;
 
 static struct ctx {
-	struct rb_tree mergeable_pages;
-	struct rb_tree reclaimed_pages; // for debugging
+	struct rb_node *mergeable_pages;
+	struct rb_node *reclaimed_pages; // for debugging
 	struct rb_node *iter_next;
 	spinlock_t lock;
 } _ctx;
@@ -109,7 +109,7 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 
 	struct granule *grn = find_granule(pa);
 	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
-	new_item->rb.hash = hash_page((uint64_t *)mapped_page);
+	new_item->rb.key = hash_page((uint64_t *)mapped_page);
 	buffer_unmap(mapped_page);
 
 	new_item->pa = pa;
@@ -153,25 +153,26 @@ get_scanned_item(struct ctx *ctx)
 	if (ctx->iter_next) {
 		item = rb2item(ctx->iter_next);
 	} else {
-		item = rb2item(rb_min(ctx->mergeable_pages.root));
+		item = rb2item(rb_first(ctx->mergeable_pages));
 		if (!item) {
 			return NULL;
 		}
 	}
-	ctx->iter_next = rb_get_next(&item->rb);
+	ctx->iter_next = rb_next(&item->rb);
 	if (get_time_ns() < item->ns) {
 		return NULL;
 	} else {
 		return item;
 	}
+	return item;
 }
 
 static struct page_item *
-find_dup(struct rb_tree *merged_map, struct page_item *item, char *content)
+find_dup(struct rb_node *merged_map, struct page_item *item, char *content)
 {
 	uint64_t now = get_time_ns();
 
-	struct rb_node *dup_node = rb_find(merged_map, item->rb.hash);
+	struct rb_node *dup_node = rb_find(merged_map, item->rb.key);
 	if (!dup_node) {
 		return NULL;
 	}
@@ -191,19 +192,19 @@ find_dup(struct rb_tree *merged_map, struct page_item *item, char *content)
 		if (eq) {
 			return dup_item;
 		}
-	} while ((dup_node = dup_node->next) != NULL);
+	} while ((dup_node = dup_node->dup) != NULL);
 
 	return NULL;
 }
 
 static struct page_item *
-find_dup_item(struct rb_tree *mergeable_pages, struct page_item *item)
+find_dup_item(struct rb_node *mergeable_pages, struct page_item *item)
 {
 	struct granule *grn = find_granule(item->pa);
 	char *mapped_page = buffer_granule_map(grn, SLOT_RSI_CALL);
 
 	uint64_t hash = hash_page((uint64_t *)mapped_page);
-	if (hash != item->rb.hash) {
+	if (hash != item->rb.key) {
 		NOTICE("hash unmatch");
 		panic();
 	}
@@ -214,25 +215,6 @@ find_dup_item(struct rb_tree *mergeable_pages, struct page_item *item)
 		return NULL;
 	}
 	return dup_item;
-}
-
-static struct page_item *
-pick_random_item(struct rb_tree *map)
-{
-	struct rb_node *node = map->root;
-	while (1) {
-		struct rb_node *next;
-		if (rand() % 2) {
-			next = node->h.left;
-		} else {
-			next = node->h.right;
-		}
-		if (!next) {
-			return rb2item(node);
-		}
-		node = next;
-	}
-	return NULL;
 }
 
 static void
@@ -292,11 +274,11 @@ remap_page(struct page_item *dst, struct page_item *src)
 static void __attribute__((unused))
 dump_mappings(struct ctx *ctx)
 {
-	for (struct rb_node *node = rb_min(ctx->mergeable_pages.root);
-			node; node = rb_get_next(node)) {
-		for (struct rb_node *chain = node; chain; chain = chain->next) {
+	for (struct rb_node *node = rb_first(ctx->mergeable_pages);
+			node; node = rb_next(node)) {
+		for (struct rb_node *chain = node; chain; chain = chain->dup) {
 			struct page_item *item = rb2item(chain);
-			NOTICE("pa=%lx, hash=%lx\n", item->pa, item->rb.hash);
+			NOTICE("pa=%lx, hash=%lx\n", item->pa, item->rb.key);
 			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
 				NOTICE("        ipa=%lx\n", ref->ipa);
 			}
@@ -319,16 +301,16 @@ reclaim_page(struct ctx *ctx)
 	}
 	// NOTICE("scan_item=%8lx(%lx)\n", (uint64_t)&scan_item->rb, scan_item->rb.hash);
 	struct page_item *dup_item =
-		find_dup_item(&ctx->mergeable_pages, scan_item);
+		find_dup_item(ctx->mergeable_pages, scan_item);
 	if (!dup_item) {
 		// NOTICE("dup_item not found\n");
 		return 0;
 	}
-	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.hash);
+	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.key);
 
 	struct page_item *rand_item = NULL;
 	for (int i = 0; i < 5; i++) {
-		rand_item = pick_random_item(&ctx->mergeable_pages);
+		rand_item = rb2item(rb_random(ctx->mergeable_pages));
 		if (rand_item == scan_item || rand_item == dup_item) {
 			rand_item = NULL;
 		}
@@ -348,12 +330,12 @@ reclaim_page(struct ctx *ctx)
 			|| ctx->iter_next == &rand_item->rb) {
 		get_scanned_item(ctx);
 	}
-	rb_delete(&ctx->mergeable_pages, &dup_item->rb);
-	rb_delete(&ctx->mergeable_pages, &rand_item->rb);
+	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
+	rb_erase(&ctx->mergeable_pages, &rand_item->rb);
 
 	scan_item->ns = max(scan_item->ns, dup_item->ns);
-	dup_item->ns = rand_item->ns;;
-	dup_item->rb.hash = rand_item->rb.hash;
+	dup_item->ns = rand_item->ns;
+	dup_item->rb.key = rand_item->rb.key;
 	copy_page(dup_item, rand_item);
 	remap_page(scan_item, dup_item);
 	remap_page(dup_item, rand_item);
@@ -413,9 +395,9 @@ merge_handle_data_destroy(uint64_t ipa) {
 	struct ctx *ctx = &_ctx;
 	spinlock_acquire(&ctx->lock);
 
-	for (struct rb_node *node = rb_min(ctx->mergeable_pages.root);
-			node; node = rb_get_next(node)) {
-		for (struct rb_node *chain = node; chain; chain = chain->next) {
+	for (struct rb_node *node = rb_first(ctx->mergeable_pages);
+			node; node = rb_next(node)) {
+		for (struct rb_node *chain = node; chain; chain = chain->dup) {
 			struct page_item *item = rb2item(chain);
 			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
 				if (ref->ipa == ipa) {
@@ -426,9 +408,9 @@ merge_handle_data_destroy(uint64_t ipa) {
 		}
 	}
 
-	for (struct rb_node *node = rb_min(ctx->reclaimed_pages.root);
-			node; node = rb_get_next(node)) {
-		for (struct rb_node *chain = node; chain; chain = chain->next) {
+	for (struct rb_node *node = rb_first(ctx->reclaimed_pages);
+			node; node = rb_next(node)) {
+		for (struct rb_node *chain = node; chain; chain = chain->dup) {
 			struct page_item *item = rb2item(chain);
 			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
 				if (ref->ipa == ipa) {

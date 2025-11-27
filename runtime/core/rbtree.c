@@ -11,377 +11,529 @@
 #include <smc.h>
 #include <utils_def.h>
 
-static void
-rb_rotate_left(struct rb_tree *map, struct rb_node *node)
+static inline size_t
+_size_of(const struct rb_node *n)
 {
-	struct rb_node *right = node->h.right;
-	node->h.right = right->h.left;
-	if (right->h.left) {
-		right->h.left->h.parent = node;
+	return n ? n->size : 0;
+}
+
+/* count nodes in duplicate chain including head */
+static size_t
+_group_count(const struct rb_node *n)
+{
+	size_t c = 1;
+	const struct rb_node *p = n->dup;
+	while (p) {
+		c++;
+		p = p->dup;
 	}
-	right->h.parent = node->h.parent;
-	if (!node->h.parent) {
-		map->root = right;
-	} else if (node == node->h.parent->h.left) {
-		node->h.parent->h.left = right;
-	} else {
-		node->h.parent->h.right = right;
-	}
-	right->h.left = node;
-	node->h.parent = right;
+	return c;
 }
 
 static void
-rb_rotate_right(struct rb_tree *map, struct rb_node *node)
+_recompute_size_up(struct rb_node *n)
 {
-	struct rb_node *left = node->h.left;
-	node->h.left = left->h.right;
-	if (left->h.right) {
-		left->h.right->h.parent = node;
+	while (n) {
+		n->size = _group_count(n) + _size_of(n->left)
+			+ _size_of(n->right);
+		n = n->parent;
 	}
-	left->h.parent = node->h.parent;
-	if (!node->h.parent) {
-		map->root = left;
-	} else if (node == node->h.parent->h.right) {
-		node->h.parent->h.right = left;
-	} else {
-		node->h.parent->h.left = left;
-	}
-	left->h.right = node;
-	node->h.parent = left;
 }
 
 static void
-rb_insert_fixup(struct rb_tree *map, struct rb_node *node)
+_left_rotate(struct rb_node **root, struct rb_node *x)
 {
-	while (node->h.parent && node->h.parent->red) {
-		if (node->h.parent == node->h.parent->h.parent->h.left) {
-			struct rb_node *uncle =
-				node->h.parent->h.parent->h.right;
-			if (uncle && uncle->red) {
-				node->h.parent->red = false;
-				uncle->red = false;
-				node->h.parent->h.parent->red = true;
-				node = node->h.parent->h.parent;
-			} else {
-				if (node == node->h.parent->h.right) {
-					node = node->h.parent;
-					rb_rotate_left(map, node);
-				}
-				node->h.parent->red = false;
-				node->h.parent->h.parent->red = true;
-				rb_rotate_right(map, node->h.parent->h.parent);
-			}
-		} else {
-			struct rb_node *uncle =
-				node->h.parent->h.parent->h.left;
-			if (uncle && uncle->red) {
-				node->h.parent->red = false;
-				uncle->red = false;
-				node->h.parent->h.parent->red = true;
-				node = node->h.parent->h.parent;
-			} else {
-				if (node == node->h.parent->h.left) {
-					node = node->h.parent;
-					rb_rotate_right(map, node);
-				}
-				node->h.parent->red = false;
-				node->h.parent->h.parent->red = true;
-				rb_rotate_left(map, node->h.parent->h.parent);
-			}
-		}
-	}
-	map->root->red = false;
+	struct rb_node *y = x->right;
+	x->right = y->left;
+	if (y->left)
+		y->left->parent = x;
+	y->parent = x->parent;
+	if (!x->parent)
+		*root = y;
+	else if (x == x->parent->left)
+		x->parent->left = y;
+	else
+		x->parent->right = y;
+	y->left = x;
+	x->parent = y;
+	/* update sizes: include duplicate counts for heads */
+	x->size = _group_count(x) + _size_of(x->left) + _size_of(x->right);
+	y->size = _group_count(y) + _size_of(y->left) + _size_of(y->right);
 }
 
 static void
-list_insert(struct rb_node *head, struct rb_node *node)
+_right_rotate(struct rb_node **root, struct rb_node *y)
 {
-	struct rb_node **tail_link = &head->next;
-	while (*tail_link) {
-		tail_link = &(*tail_link)->next;
-	}
-	*tail_link = node;
-}
-
-static void
-list_delete(struct rb_node *item)
-{
-	struct rb_node **link = &item->c.head->next;
-	while (*link) {
-		if (*link == item) {
-			*link = item->next;
-			item->next = NULL;
-			return;
-		}
-		link = &(*link)->next;
-	}
+	struct rb_node *x = y->left;
+	y->left = x->right;
+	if (x->right)
+		x->right->parent = y;
+	x->parent = y->parent;
+	if (!y->parent)
+		*root = x;
+	else if (y == y->parent->right)
+		y->parent->right = x;
+	else
+		y->parent->left = x;
+	x->right = y;
+	y->parent = x;
+	/* update sizes */
+	y->size = _group_count(y) + _size_of(y->left) + _size_of(y->right);
+	x->size = _group_count(x) + _size_of(x->left) + _size_of(x->right);
 }
 
 void
-rb_insert(struct rb_tree *map, struct rb_node *new_item)
+rb_insert(struct rb_node **root, struct rb_node *z)
 {
-	struct rb_node *parent = NULL;
-	struct rb_node **link = &map->root;
-	while (*link) {
-		parent = *link;
-		if (new_item->hash < parent->hash) {
-			link = &parent->h.left;
-		} else if (new_item->hash > parent->hash) {
-			link = &parent->h.right;
+	struct rb_node *y = NULL;
+	struct rb_node *x = *root;
+	/* standard BST insert */
+	while (x) {
+		y = x;
+		x->size += 1; /* increment size along the insertion path */
+		if (z->key < x->key) {
+			x = x->left;
+		} else if (z->key > x->key) {
+			x = x->right;
 		} else {
-			new_item->chained = true;
-			new_item->c.head = parent;
-			map->size++;
-			list_insert(parent, new_item);
+			/* duplicate: chain onto x->dup (append to tail) */
+			struct rb_node *t = x;
+			while (t->dup)
+				t = t->dup;
+			t->dup = z;
+			z->dup = NULL;
+			z->left = z->right = NULL;
+			z->parent = x; /* parent points to head */
+			z->color = RB_RED;
+			z->size = 1;
 			return;
 		}
 	}
-	new_item->h.parent = parent;
-	new_item->h.left = NULL;
-	new_item->h.right = NULL;
-	new_item->red = true;
-	*link = new_item;
-	map->size++;
-	rb_insert_fixup(map, new_item);
+	z->parent = y;
+	z->left = z->right = NULL;
+	z->dup = NULL;
+	z->color = RB_RED;
+	z->size = 1;
+	if (!y) {
+		*root = z;
+	} else if (z->key < y->key) {
+		y->left = z;
+	} else {
+		y->right = z;
+	}
+
+	/* fixup */
+	while (z->parent && z->parent->color == RB_RED) {
+		if (z->parent == z->parent->parent->left) {
+			struct rb_node *y = z->parent->parent->right;
+			if (y && y->color == RB_RED) {
+				z->parent->color = RB_BLACK;
+				y->color = RB_BLACK;
+				z->parent->parent->color = RB_RED;
+				z = z->parent->parent;
+			} else {
+				if (z == z->parent->right) {
+					z = z->parent;
+					_left_rotate(root, z);
+				}
+				z->parent->color = RB_BLACK;
+				z->parent->parent->color = RB_RED;
+				_right_rotate(root, z->parent->parent);
+			}
+		} else {
+			struct rb_node *y = z->parent->parent->left;
+			if (y && y->color == RB_RED) {
+				z->parent->color = RB_BLACK;
+				y->color = RB_BLACK;
+				z->parent->parent->color = RB_RED;
+				z = z->parent->parent;
+			} else {
+				if (z == z->parent->left) {
+					z = z->parent;
+					_right_rotate(root, z);
+				}
+				z->parent->color = RB_BLACK;
+				z->parent->parent->color = RB_RED;
+				_left_rotate(root, z->parent->parent);
+			}
+		}
+	}
+	(*root)->color = RB_BLACK;
+}
+
+/* transplant u with v */
+static void
+_transplant(struct rb_node **root, struct rb_node *u, struct rb_node *v)
+{
+	if (!u->parent)
+		*root = v;
+	else if (u == u->parent->left)
+		u->parent->left = v;
+	else
+		u->parent->right = v;
+	if (v)
+		v->parent = u->parent;
+}
+
+static struct rb_node *
+_minimum(struct rb_node *x)
+{
+	while (x->left)
+		x = x->left;
+	return x;
+}
+
+void
+rb_erase(struct rb_node **root, struct rb_node *z)
+{
+	/* If z is a duplicate (not part of the binary links), unlink it */
+	if (z->parent && z != z->parent->left && z != z->parent->right) {
+		struct rb_node *head = z->parent;
+		/* find previous in dup list */
+		if (head->dup == z) {
+			head->dup = z->dup;
+		} else {
+			struct rb_node *prev = head->dup;
+			while (prev && prev->dup != z)
+				prev = prev->dup;
+			if (prev)
+				prev->dup = z->dup;
+		}
+		if (z->dup)
+			z->dup->parent = head;
+		/* decrement sizes from head upward */
+		struct rb_node *p = head;
+		while (p) {
+			p->size -= 1;
+			p = p->parent;
+		}
+		return;
+	}
+
+	struct rb_node *y = z;
+	struct rb_node *x = NULL;
+	unsigned char y_original_color = y->color;
+
+	/* Decrement sizes on path from z up to root */
+	struct rb_node *p = z;
+	while (p) {
+		p->size -= 1;
+		p = p->parent;
+	}
+
+	/* If head has duplicates, promote first duplicate into the tree slot */
+	if (z->dup) {
+		struct rb_node *d = z->dup; /* first duplicate */
+		/* unlink d from z's dup list */
+		z->dup = d->dup;
+		/* attach remaining dups to d */
+		d->dup = z->dup;
+		if (d->dup) {
+			struct rb_node *q = d->dup;
+			while (q) {
+				q->parent = d;
+				q = q->dup;
+			}
+		}
+		/* transplant d into z's tree position */
+		d->parent = z->parent;
+		d->left = z->left;
+		d->right = z->right;
+		d->color = z->color;
+		if (d->left)
+			d->left->parent = d;
+		if (d->right)
+			d->right->parent = d;
+		if (!z->parent)
+			*root = d;
+		else if (z == z->parent->left)
+			z->parent->left = d;
+		else
+			z->parent->right = d;
+		/* d already has size decreased (we decremented z earlier) so
+		 * set to z->size */
+		d->size = z->size;
+		_recompute_size_up(d);
+		return;
+	}
+
+	if (!z->left) {
+		x = z->right;
+		_transplant(root, z, z->right);
+	} else if (!z->right) {
+		x = z->left;
+		_transplant(root, z, z->left);
+	} else {
+		y = _minimum(z->right);
+		y_original_color = y->color;
+		x = y->right;
+		if (y->parent == z) {
+			if (x)
+				x->parent = y;
+		} else {
+			_transplant(root, y, y->right);
+			y->right = z->right;
+			if (y->right)
+				y->right->parent = y;
+		}
+		_transplant(root, z, y);
+		y->left = z->left;
+		if (y->left)
+			y->left->parent = y;
+		y->color = z->color;
+		/* fix sizes: y replaces z, give y z's size decremented already
+		   but we'll recompute sizes upward from y */
+		y->size = y->size; /* placeholder; recompute next */
+		_recompute_size_up(y);
+	}
+
+	if (y_original_color == RB_BLACK) {
+		struct rb_node *w;
+		while (x != *root && (!x || x->color == RB_BLACK)) {
+			if (x && x->parent && x == x->parent->left) {
+				w = x->parent->right;
+				if (w && w->color == RB_RED) {
+					w->color = RB_BLACK;
+					x->parent->color = RB_RED;
+					_left_rotate(root, x->parent);
+					w = x->parent->right;
+				}
+				if ((!w->left || w->left->color == RB_BLACK)
+					&& (!w->right
+						|| w->right->color
+							== RB_BLACK)) {
+					w->color = RB_RED;
+					x = x->parent;
+				} else {
+					if (!w->right
+						|| w->right->color
+							== RB_BLACK) {
+						if (w->left)
+							w->left->color =
+								RB_BLACK;
+						w->color = RB_RED;
+						_right_rotate(root, w);
+						w = x->parent->right;
+					}
+					w->color = x->parent->color;
+					x->parent->color = RB_BLACK;
+					if (w->right)
+						w->right->color = RB_BLACK;
+					_left_rotate(root, x->parent);
+					x = *root;
+				}
+			} else if (x && x->parent) {
+				/* symmetric */
+				w = x->parent->left;
+				if (w && w->color == RB_RED) {
+					w->color = RB_BLACK;
+					x->parent->color = RB_RED;
+					_right_rotate(root, x->parent);
+					w = x->parent->left;
+				}
+				if ((!w->right || w->right->color == RB_BLACK)
+					&& (!w->left
+						|| w->left->color
+							== RB_BLACK)) {
+					w->color = RB_RED;
+					x = x->parent;
+				} else {
+					if (!w->left
+						|| w->left->color == RB_BLACK) {
+						if (w->right)
+							w->right->color =
+								RB_BLACK;
+						w->color = RB_RED;
+						_left_rotate(root, w);
+						w = x->parent->left;
+					}
+					w->color = x->parent->color;
+					x->parent->color = RB_BLACK;
+					if (w->left)
+						w->left->color = RB_BLACK;
+					_right_rotate(root, x->parent);
+					x = *root;
+				}
+			} else {
+				break;
+			}
+		}
+		if (x)
+			x->color = RB_BLACK;
+	}
 }
 
 struct rb_node *
-rb_find(struct rb_tree *map, uint64_t hash)
+rb_first(struct rb_node *root)
 {
-	struct rb_node *node = map->root;
-	while (node) {
-		if (hash < node->hash) {
-			node = node->h.left;
-		} else if (hash > node->hash) {
-			node = node->h.right;
+	if (!root)
+		return NULL;
+	while (root->left)
+		root = root->left;
+	return root;
+}
+
+struct rb_node *
+rb_next(struct rb_node *n)
+{
+	if (!n)
+		return NULL;
+	/* if this node is a duplicate (not in binary links) */
+	if (n->parent && n != n->parent->left && n != n->parent->right) {
+		/* duplicates chain first */
+		if (n->dup)
+			return n->dup;
+		/* otherwise successor is successor of the head in the binary
+		 * tree */
+		struct rb_node *head = n->parent;
+		/* find successor of head in tree (ignore dup lists) */
+		struct rb_node *x = head;
+		if (x->right) {
+			x = x->right;
+			while (x->left)
+				x = x->left;
+			return x;
+		}
+		struct rb_node *p = x->parent;
+		while (p && x == p->right) {
+			x = p;
+			p = p->parent;
+		}
+		return p;
+	}
+
+	/* duplicates first for tree heads */
+	if (n->dup)
+		return n->dup;
+
+	/* helper: successor in the binary tree ignoring dup chains */
+	struct rb_node *x = n;
+	if (x->right) {
+		x = x->right;
+		while (x->left)
+			x = x->left;
+		return x;
+	}
+	struct rb_node *p = x->parent;
+	while (p && x == p->right) {
+		x = p;
+		p = p->parent;
+	}
+	return p;
+}
+
+struct rb_node *
+rb_select(struct rb_node *root, size_t index)
+{
+	struct rb_node *x = root;
+	while (x) {
+		size_t left_size = _size_of(x->left);
+		size_t group = _group_count(x);
+		if (index < left_size)
+			x = x->left;
+		else if (index < left_size + group) {
+			/* pick within duplicates */
+			size_t off = index - left_size;
+			if (off == 0)
+				return x;
+			struct rb_node *d = x->dup;
+			while (off > 1 && d) {
+				d = d->dup;
+				off--;
+			}
+			return d;
 		} else {
-			return node;
+			index = index - left_size - group;
+			x = x->right;
 		}
 	}
 	return NULL;
 }
 
-struct rb_node *
-rb_min(struct rb_node *node)
+size_t
+rb_rank(struct rb_node *root, struct rb_node *x)
 {
-	if (!node) {
-		return NULL;
+	/* if x is in a duplicate chain (not the head), compute offset */
+	size_t offset = 0;
+	if (x->parent && x != x->parent->left && x != x->parent->right) {
+		struct rb_node *head = x->parent;
+		struct rb_node *d = head->dup;
+		offset = 1; /* first dup has offset 1 */
+		while (d && d != x) {
+			d = d->dup;
+			offset++;
+		}
+		/* rank of head + offset */
+		size_t r = 0;
+		/* compute rank of head (tree node) */
+		r = _size_of(head->left);
+		struct rb_node *t = head;
+		while (t != root) {
+			if (t->parent && t == t->parent->right)
+				r += _group_count(t->parent) + _size_of(t->parent->left);
+			t = t->parent;
+		}
+		return r + offset;
 	}
-	while (node->h.left) {
-		node = node->h.left;
+
+	size_t r = _size_of(x->left);
+	struct rb_node *y = x;
+	while (y != root) {
+		if (y->parent && y == y->parent->right)
+			r += _group_count(y->parent) + _size_of(y->parent->left);
+		y = y->parent;
 	}
-	return node;
+	return r;
 }
 
-static void
-rb_transplant(struct rb_tree *map, struct rb_node *u, struct rb_node *v)
+/* helper: return a uniformly distributed index in [0, n). Uses rand()
+   and combines calls to get more bits when needed. Caller must seed RNG.
+*/
+/* xorshift64 PRNG state (file-local). Use a fixed initial seed for
+   deterministic sequences across runs. */
+static uint64_t _xorshift_state = 88172645463325252ULL;
+
+static inline uint64_t
+_xorshift64(void)
 {
-	if (!u->h.parent) {
-		map->root = v;
-	} else if (u == u->h.parent->h.left) {
-		u->h.parent->h.left = v;
-	} else {
-		u->h.parent->h.right = v;
-	}
-	if (v) {
-		v->h.parent = u->h.parent;
-	}
+	uint64_t x = _xorshift_state;
+	x ^= x << 13;
+	x ^= x >> 7;
+	x ^= x << 17;
+	_xorshift_state = x;
+	return x;
 }
 
-static void
-rb_delete_fixup(struct rb_tree *map, struct rb_node *x, struct rb_node *xp)
+static size_t
+_rand_index(size_t n)
 {
-	while ((x != map->root) && (!x || !x->red)) {
-		if (x == (xp ? xp->h.left : NULL)) {
-			struct rb_node *w = xp->h.right;
-			if (w && w->red) {
-				w->red = false;
-				xp->red = true;
-				rb_rotate_left(map, xp);
-				w = xp->h.right;
-			}
-			if ((!w->h.left || !w->h.left->red)
-				&& (!w->h.right || !w->h.right->red)) {
-				w->red = true;
-				x = xp;
-				xp = xp->h.parent;
-			} else {
-				if (!w->h.right || !w->h.right->red) {
-					if (w->h.left) {
-						w->h.left->red = false;
-					}
-					w->red = true;
-					rb_rotate_right(map, w);
-					w = xp->h.right;
-				}
-				w->red = xp->red;
-				xp->red = false;
-				if (w->h.right) {
-					w->h.right->red = false;
-				}
-				rb_rotate_left(map, xp);
-				x = map->root;
-				break;
-			}
-		} else {
-			struct rb_node *w = xp->h.left;
-			if (w && w->red) {
-				w->red = false;
-				xp->red = true;
-				rb_rotate_right(map, xp);
-				w = xp->h.left;
-			}
-			if ((!w->h.right || !w->h.right->red)
-				&& (!w->h.left || !w->h.left->red)) {
-				w->red = true;
-				x = xp;
-				xp = xp->h.parent;
-			} else {
-				if (!w->h.left || !w->h.left->red) {
-					if (w->h.right) {
-						w->h.right->red = false;
-					}
-					w->red = true;
-					rb_rotate_left(map, w);
-					w = xp->h.left;
-				}
-				w->red = xp->red;
-				xp->red = false;
-				if (w->h.left) {
-					w->h.left->red = false;
-				}
-				rb_rotate_right(map, xp);
-				x = map->root;
-				break;
-			}
-		}
-	}
-	if (x) {
-		x->red = false;
-	}
-}
-
-static void
-replace_ref(struct rb_node **ref, struct rb_node *old_node,
-		struct rb_node *new_node)
-{
-	if (*ref == old_node) {
-		*ref = new_node;
-	}
-}
-
-void
-rb_delete(struct rb_tree *map, struct rb_node *z)
-{
-	if (z->chained) {
-		list_delete(z);
-		*z = (struct rb_node) {.hash = z->hash};
-		map->size--;
-		return;
-	} else if (z->next) {
-		if (z->h.parent) {
-			replace_ref(&z->h.parent->h.left, z, z->next);
-			replace_ref(&z->h.parent->h.right, z, z->next);
-		}
-		if (z->h.left) {
-			replace_ref(&z->h.left->h.parent, z, z->next);
-		}
-		if (z->h.right) {
-			replace_ref(&z->h.right->h.parent, z, z->next);
-		}
-		for (struct rb_node *n = z->next->next; n; n = n->next) {
-			n->c.head = z->next;
-		}
-		if (map->root == z) {
-			map->root = z->next;
-		}
-		z->next->chained = false;
-		z->next->h.parent = z->h.parent;
-		z->next->h.left = z->h.left;
-		z->next->h.right = z->h.right;
-		z->next->red = z->red;
-		*z = (struct rb_node) {.hash = z->hash};
-		map->size--;
-		return;
-	}
-
-	struct rb_node *y = z;
-	struct rb_node *x;
-	struct rb_node *xp;
-	int y_red = y->red;
-	if (!z->h.left) {
-		x = z->h.right;
-		xp = z->h.parent;
-		rb_transplant(map, z, z->h.right);
-	} else if (!z->h.right) {
-		x = z->h.left;
-		xp = z->h.parent;
-		rb_transplant(map, z, z->h.left);
-	} else {
-		y = rb_min(z->h.right);
-		y_red = y->red;
-		x = y->h.right;
-		if (y->h.parent == z) {
-			xp = y;
-		} else {
-			rb_transplant(map, y, y->h.right);
-			y->h.right = z->h.right;
-			y->h.right->h.parent = y;
-			xp = y->h.parent;
-		}
-		rb_transplant(map, z, y);
-		y->h.left = z->h.left;
-		y->h.left->h.parent = y;
-		y->red = z->red;
-	}
-	*z = (struct rb_node) {.hash = z->hash};
-	map->size--;
-	if (!y_red) {
-		rb_delete_fixup(map, x, xp);
-	}
+	if (n == 0)
+		return 0;
+	uint64_t r = _xorshift64();
+	return (size_t)(r % n);
 }
 
 struct rb_node *
-rb_get_next(struct rb_node *node)
+rb_random(struct rb_node *root)
 {
-	if (!node) {
+	if (!root)
 		return NULL;
-	}
-
-	if (node->h.right) {
-		node = node->h.right;
-		while (node->h.left) {
-			node = node->h.left;
-		}
-		return node;
-	}
-
-	struct rb_node *parent = node->h.parent;
-	while (parent && node == parent->h.right) {
-		node = parent;
-		parent = parent->h.parent;
-	}
-	return parent;
+	size_t total = root->size;
+	size_t idx = _rand_index(total);
+	return rb_select(root, idx);
 }
 
-void
-rb_print_node(struct rb_node *root, int space)
+struct rb_node *
+rb_find(struct rb_node *root, uint64_t key)
 {
-	if (!root) {
-		return;
+	struct rb_node *x = root;
+	while (x) {
+		if (key < x->key)
+			x = x->left;
+		else if (key > x->key)
+			x = x->right;
+		else
+			return x; /* head node; duplicates on x->dup */
 	}
-	space += 15;
-	rb_print_node(root->h.right, space);
-	for (int i = 15; i < space; i++) {
-		NOTICE(" ");
-	}
-	NOTICE("%lx%c(%8lx)", root->hash, root->chained ? 'c' : 'h', (uint64_t)root);
-
-	for (struct rb_node *chain = root->next; chain; chain = chain->next) {
-		NOTICE("-%lx%c(%8lx)", chain->hash, chain->chained ? 'c' : 'h', (uint64_t)chain);
-	}
-	NOTICE("\n");
-
-	rb_print_node(root->h.left, space);
+	return NULL;
 }

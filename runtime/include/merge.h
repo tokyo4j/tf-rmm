@@ -2,36 +2,68 @@
 #define MERGE_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 struct rb_node {
-	uint64_t hash;
-	union {
-		struct {
-			struct rb_node *left;
-			struct rb_node *right;
-			struct rb_node *parent;
-		} h;
-		struct {
-			struct rb_node *head;
-		} c;
-	};
-	struct rb_node *next;
-	bool red;
-	bool chained;
+	struct rb_node *left;
+	struct rb_node *right;
+	struct rb_node *parent;
+	/* duplicate chain: nodes with equal key are chained here (not part of
+	   binary links). Head node is the one embedded in the tree; its
+	   `dup` points to the first duplicate, which points to the next, etc.
+	 */
+	struct rb_node *dup;
+	size_t size;	     /* total nodes in subtree rooted here */
+	unsigned char color; /* 0 = red, 1 = black */
+	uint64_t key;        /* key stored in the node */
 };
 
-struct rb_tree {
-	struct rb_node *root;
-	uint64_t size;
-};
+#define RB_RED 0
+#define RB_BLACK 1
 
-void rb_insert(struct rb_tree *map, struct rb_node *new_item);
-struct rb_node *rb_find(struct rb_tree *map, uint64_t hash);
-void rb_delete(struct rb_tree *map, struct rb_node *z);
-struct rb_node *rb_get_next(struct rb_node *iter);
-struct rb_node *rb_min(struct rb_node *node);
-void rb_print_node(struct rb_node *root, int space);
+#define rb_entry(ptr, type, member)                                            \
+	((type *)((char *)(ptr) - offsetof(type, member)))
+
+/* Initialize a standalone node (no links). Color unspecified until inserted. */
+static inline void
+rb_node_init(struct rb_node *n)
+{
+	n->left = n->right = n->parent = NULL;
+	n->dup = NULL;
+	n->color = RB_RED;
+	n->size = 1;
+}
+
+/* Insert node into tree rooted at *root.
+	Caller must set `node->key` before calling. Keys are compared using the
+	embedded `node->key` (uint64_t).
+*/
+void rb_insert(struct rb_node **root, struct rb_node *node);
+
+/* Erase node from tree rooted at *root. Node must be already in tree. */
+void rb_erase(struct rb_node **root, struct rb_node *node);
+
+/* In-order selection by 0-based index. Returns NULL if index >= size(root). */
+struct rb_node *rb_select(struct rb_node *root, size_t index);
+
+/* In-order rank (0-based) of node in tree rooted at root. */
+size_t rb_rank(struct rb_node *root, struct rb_node *node);
+
+/* Iterator helpers */
+struct rb_node *rb_first(struct rb_node *root);
+struct rb_node *rb_next(struct rb_node *node);
+
+/* Pick a random node uniformly from the tree (including duplicates).
+	Returns NULL if root is NULL. Expected O(log N) time (uses sizes).
+*/
+struct rb_node *rb_random(struct rb_node *root);
+
+/* Find the tree head node with the given key. Returns NULL if not found.
+	If found, the returned node is the head in the binary links; duplicates
+	(if any) are available via the returned node's `dup` chain.
+*/
+struct rb_node *rb_find(struct rb_node *root, uint64_t key);
 
 struct page_ref {
 	uint64_t ipa;
