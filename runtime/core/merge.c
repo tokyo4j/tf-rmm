@@ -117,7 +117,7 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	const uint64_t second = 1000000000;
 	uint64_t time_thr = 30 * second + 10 * second * (uint64_t)rand() / (uint64_t)UINT32_MAX;
 	new_item->ns = get_time_ns() + time_thr;
-	NOTICE("new_item->ns=%ld\n", new_item->ns);
+	// NOTICE("new_item->ns=%ld\n", new_item->ns);
 	rb_insert(&ctx->mergeable_pages, &new_item->rb);
 }
 
@@ -159,7 +159,11 @@ get_scanned_item(struct ctx *ctx)
 		}
 	}
 	ctx->iter_next = rb_get_next(&item->rb);
-	return item;
+	if (get_time_ns() < item->ns) {
+		return NULL;
+	} else {
+		return item;
+	}
 }
 
 static struct page_item *
@@ -301,6 +305,11 @@ dump_mappings(struct ctx *ctx)
 }
 
 static uint64_t
+max(uint64_t a, uint64_t b) {
+	return (a > b) ? a : b;
+}
+
+static uint64_t
 reclaim_page(struct ctx *ctx)
 {
 	struct page_item *scan_item = get_scanned_item(ctx);
@@ -331,6 +340,8 @@ reclaim_page(struct ctx *ctx)
 		// NOTICE("rand_item not found\n");
 		return 0;
 	}
+	NOTICE("scan->ipa=%lx, dup->ipa=%lx, rand->pa=%lx, rand->ipa=%lx\n",
+		scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
 	// NOTICE("rand_item=%8lx(%lx)\n", (uint64_t)&rand_item->rb, rand_item->rb.hash);
 
 	while (ctx->iter_next == &dup_item->rb
@@ -340,6 +351,8 @@ reclaim_page(struct ctx *ctx)
 	rb_delete(&ctx->mergeable_pages, &dup_item->rb);
 	rb_delete(&ctx->mergeable_pages, &rand_item->rb);
 
+	scan_item->ns = max(scan_item->ns, dup_item->ns);
+	dup_item->ns = rand_item->ns;;
 	dup_item->rb.hash = rand_item->rb.hash;
 	copy_page(dup_item, rand_item);
 	remap_page(scan_item, dup_item);
