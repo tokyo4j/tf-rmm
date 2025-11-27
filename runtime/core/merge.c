@@ -278,9 +278,19 @@ reclaim_page(struct ctx *ctx)
 	}
 	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.key);
 
+	struct rb_node **rand_tree = NULL;
 	struct page_item *rand_item = NULL;
 	for (int i = 0; i < 5; i++) {
-		rand_item = rb2item(rb_random(ctx->mergeable_pages));
+		size_t idx = rand() % (rb_size(ctx->pending_pages)
+					+ rb_size(ctx->mergeable_pages));
+		if (idx < rb_size(ctx->pending_pages)) {
+			rand_tree = &ctx->pending_pages;
+		} else {
+			rand_tree = &ctx->mergeable_pages;
+			idx -= rb_size(ctx->pending_pages);
+		}
+		rand_item = rb2item(rb_select(*rand_tree, idx));
+
 		if (rand_item == scan_item || rand_item == dup_item) {
 			rand_item = NULL;
 		}
@@ -292,12 +302,12 @@ reclaim_page(struct ctx *ctx)
 		// NOTICE("rand_item not found\n");
 		return 0;
 	}
-	NOTICE("scan->ipa=%lx, dup->ipa=%lx, rand->pa=%lx, rand->ipa=%lx\n",
-		scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
+	// NOTICE("scan->ipa=%lx, dup->ipa=%lx, rand->pa=%lx, rand->ipa=%lx\n",
+	// 	scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
 	// NOTICE("rand_item=%8lx(%lx)\n", (uint64_t)&rand_item->rb, rand_item->rb.hash);
 
 	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
-	rb_erase(&ctx->mergeable_pages, &rand_item->rb);
+	rb_erase(rand_tree, &rand_item->rb);
 
 	scan_item->ns = max(scan_item->ns, dup_item->ns);
 	dup_item->ns = rand_item->ns;
@@ -305,7 +315,7 @@ reclaim_page(struct ctx *ctx)
 	copy_page(dup_item, rand_item);
 	remap_page(scan_item, dup_item);
 	remap_page(dup_item, rand_item);
-	rb_insert(&ctx->mergeable_pages, &dup_item->rb);
+	rb_insert(rand_tree, &dup_item->rb);
 
 	struct granule *granule = find_granule(rand_item->pa);
 	granule_lock(granule, GRANULE_STATE_DATA);

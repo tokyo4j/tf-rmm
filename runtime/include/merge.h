@@ -25,6 +25,12 @@ struct rb_node {
 #define rb_entry(ptr, type, member)                                            \
 	((type *)((char *)(ptr) - offsetof(type, member)))
 
+static inline size_t
+rb_size(const struct rb_node *n)
+{
+	return n ? n->size : 0;
+}
+
 /* Initialize a standalone node (no links). Color unspecified until inserted. */
 static inline void
 rb_node_init(struct rb_node *n)
@@ -53,11 +59,6 @@ size_t rb_rank(struct rb_node *root, struct rb_node *node);
 /* Iterator helpers */
 struct rb_node *rb_first(struct rb_node *root);
 struct rb_node *rb_next(struct rb_node *node);
-
-/* Pick a random node uniformly from the tree (including duplicates).
-	Returns NULL if root is NULL. Expected O(log N) time (uses sizes).
-*/
-struct rb_node *rb_random(struct rb_node *root);
 
 /* Find the tree head node with the given key. Returns NULL if not found.
 	If found, the returned node is the head in the binary links; duplicates

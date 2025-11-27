@@ -11,12 +11,6 @@
 #include <smc.h>
 #include <utils_def.h>
 
-static inline size_t
-_size_of(const struct rb_node *n)
-{
-	return n ? n->size : 0;
-}
-
 /* count nodes in duplicate chain including head */
 static size_t
 _group_count(const struct rb_node *n)
@@ -34,8 +28,8 @@ static void
 _recompute_size_up(struct rb_node *n)
 {
 	while (n) {
-		n->size = _group_count(n) + _size_of(n->left)
-			+ _size_of(n->right);
+		n->size = _group_count(n) + rb_size(n->left)
+			+ rb_size(n->right);
 		n = n->parent;
 	}
 }
@@ -57,8 +51,8 @@ _left_rotate(struct rb_node **root, struct rb_node *x)
 	y->left = x;
 	x->parent = y;
 	/* update sizes: include duplicate counts for heads */
-	x->size = _group_count(x) + _size_of(x->left) + _size_of(x->right);
-	y->size = _group_count(y) + _size_of(y->left) + _size_of(y->right);
+	x->size = _group_count(x) + rb_size(x->left) + rb_size(x->right);
+	y->size = _group_count(y) + rb_size(y->left) + rb_size(y->right);
 }
 
 static void
@@ -78,8 +72,8 @@ _right_rotate(struct rb_node **root, struct rb_node *y)
 	x->right = y;
 	y->parent = x;
 	/* update sizes */
-	y->size = _group_count(y) + _size_of(y->left) + _size_of(y->right);
-	x->size = _group_count(x) + _size_of(x->left) + _size_of(x->right);
+	y->size = _group_count(y) + rb_size(y->left) + rb_size(y->right);
+	x->size = _group_count(x) + rb_size(x->left) + rb_size(x->right);
 }
 
 void
@@ -427,7 +421,7 @@ rb_select(struct rb_node *root, size_t index)
 {
 	struct rb_node *x = root;
 	while (x) {
-		size_t left_size = _size_of(x->left);
+		size_t left_size = rb_size(x->left);
 		size_t group = _group_count(x);
 		if (index < left_size)
 			x = x->left;
@@ -466,61 +460,24 @@ rb_rank(struct rb_node *root, struct rb_node *x)
 		/* rank of head + offset */
 		size_t r = 0;
 		/* compute rank of head (tree node) */
-		r = _size_of(head->left);
+		r = rb_size(head->left);
 		struct rb_node *t = head;
 		while (t != root) {
 			if (t->parent && t == t->parent->right)
-				r += _group_count(t->parent) + _size_of(t->parent->left);
+				r += _group_count(t->parent) + rb_size(t->parent->left);
 			t = t->parent;
 		}
 		return r + offset;
 	}
 
-	size_t r = _size_of(x->left);
+	size_t r = rb_size(x->left);
 	struct rb_node *y = x;
 	while (y != root) {
 		if (y->parent && y == y->parent->right)
-			r += _group_count(y->parent) + _size_of(y->parent->left);
+			r += _group_count(y->parent) + rb_size(y->parent->left);
 		y = y->parent;
 	}
 	return r;
-}
-
-/* helper: return a uniformly distributed index in [0, n). Uses rand()
-   and combines calls to get more bits when needed. Caller must seed RNG.
-*/
-/* xorshift64 PRNG state (file-local). Use a fixed initial seed for
-   deterministic sequences across runs. */
-static uint64_t _xorshift_state = 88172645463325252ULL;
-
-static inline uint64_t
-_xorshift64(void)
-{
-	uint64_t x = _xorshift_state;
-	x ^= x << 13;
-	x ^= x >> 7;
-	x ^= x << 17;
-	_xorshift_state = x;
-	return x;
-}
-
-static size_t
-_rand_index(size_t n)
-{
-	if (n == 0)
-		return 0;
-	uint64_t r = _xorshift64();
-	return (size_t)(r % n);
-}
-
-struct rb_node *
-rb_random(struct rb_node *root)
-{
-	if (!root)
-		return NULL;
-	size_t total = root->size;
-	size_t idx = _rand_index(total);
-	return rb_select(root, idx);
 }
 
 struct rb_node *
