@@ -97,6 +97,7 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 
 	struct page_ref *new_ref = myalloc(sizeof(*new_ref));
 	struct page_item *new_item = myalloc(sizeof(*new_item));
+	rb_node_init(&new_item->rb);
 	if (!new_ref || !new_item) {
 		NOTICE("OUT OF MEMORY\n");
 		panic();
@@ -240,21 +241,6 @@ remap_page(struct page_item *dst, struct page_item *src)
 	src->refs = NULL;
 }
 
-static void __attribute__((unused))
-dump_mappings(struct ctx *ctx)
-{
-	for (struct rb_node *node = rb_first(ctx->mergeable_pages);
-			node; node = rb_next(node)) {
-		for (struct rb_node *chain = node; chain; chain = chain->dup) {
-			struct page_item *item = rb2item(chain);
-			NOTICE("pa=%lx, hash=%lx\n", item->pa, item->rb.key);
-			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
-				NOTICE("        ipa=%lx\n", ref->ipa);
-			}
-		}
-	}
-}
-
 static uint64_t
 max(uint64_t a, uint64_t b) {
 	return (a > b) ? a : b;
@@ -266,14 +252,14 @@ reclaim_page(struct ctx *ctx)
 	char *content = NULL;
 	struct page_item *scan_item = get_scanned_item(ctx, &content);
 	if (!scan_item) {
-		// NOTICE("scan_item not found\n");
+		NOTICE("scan_item not found\n");
 		return 0;
 	}
 	// NOTICE("scan_item=%8lx(%lx)\n", (uint64_t)&scan_item->rb, scan_item->rb.hash);
 	struct page_item *dup_item = find_dup(ctx->mergeable_pages, scan_item, content);
 	buffer_unmap(content);
 	if (!dup_item) {
-		// NOTICE("dup_item not found\n");
+		NOTICE("dup_item not found\n");
 		return 0;
 	}
 	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.key);
@@ -299,7 +285,7 @@ reclaim_page(struct ctx *ctx)
 		}
 	}
 	if (!rand_item) {
-		// NOTICE("rand_item not found\n");
+		NOTICE("rand_item not found\n");
 		return 0;
 	}
 	// NOTICE("scan->ipa=%lx, dup->ipa=%lx, rand->pa=%lx, rand->ipa=%lx\n",
