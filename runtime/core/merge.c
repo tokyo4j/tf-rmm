@@ -162,13 +162,9 @@ find_dup(struct rb_node *merged_map, struct page_item *item, char *content)
 {
 	uint64_t now = get_time_ns();
 
-	struct rb_node *dup_node = rb_find(merged_map, item->rb.key);
-	if (!dup_node) {
-		return NULL;
-	}
-
-	do {
-		struct page_item *dup_item = rb2item(dup_node);
+	for (struct rb_node *node = rb_find(merged_map, item->rb.key);
+			node; node = node->dup) {
+		struct page_item *dup_item = rb2item(node);
 		if (dup_item == item) {
 			continue;
 		}
@@ -182,7 +178,7 @@ find_dup(struct rb_node *merged_map, struct page_item *item, char *content)
 		if (eq) {
 			return dup_item;
 		}
-	} while ((dup_node = dup_node->dup) != NULL);
+	}
 
 	return NULL;
 }
@@ -252,14 +248,14 @@ reclaim_page(struct ctx *ctx)
 	char *content = NULL;
 	struct page_item *scan_item = get_scanned_item(ctx, &content);
 	if (!scan_item) {
-		NOTICE("scan_item not found\n");
+		// NOTICE("scan_item not found\n");
 		return 0;
 	}
 	// NOTICE("scan_item=%8lx(%lx)\n", (uint64_t)&scan_item->rb, scan_item->rb.hash);
 	struct page_item *dup_item = find_dup(ctx->mergeable_pages, scan_item, content);
 	buffer_unmap(content);
 	if (!dup_item) {
-		NOTICE("dup_item not found\n");
+		// NOTICE("dup_item not found\n");
 		return 0;
 	}
 	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.key);
@@ -285,7 +281,7 @@ reclaim_page(struct ctx *ctx)
 		}
 	}
 	if (!rand_item) {
-		NOTICE("rand_item not found\n");
+		// NOTICE("rand_item not found\n");
 		return 0;
 	}
 	// NOTICE("scan->ipa=%lx, dup->ipa=%lx, rand->pa=%lx, rand->ipa=%lx\n",
@@ -322,21 +318,23 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	spinlock_acquire(&ctx->lock);
 	// NOTICE("smc_reclaim_mergeable_page(): pa=%lx\n", pa_array_addr);
 
-	uint64_t start_ns = get_time_ns();
+	// uint64_t start_ns = get_time_ns();
 
 	static uint64_t pa_array[512];
 	memset(pa_array, 0, sizeof(pa_array));
 
-	int i;
-	for (i = 0; i < 512; i++) {
+	bool success = false;
+	int i = 0;
+	for (int tries = 0; tries < 512; tries++) {
 		uint64_t pa = reclaim_page(ctx);
 		if (!pa) {
-			break;
+			continue;
 		}
-		pa_array[i] = pa;
+		success = true;
+		pa_array[i++] = pa;
 		res->x[1] = pa;
 	}
-	if (i == 0) {
+	if (!success) {
 		res->x[0] = 1;
 		goto out;
 	}
@@ -345,7 +343,7 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	ns_buffer_write(SLOT_NS, g, 0, 4096, pa_array);
 	res->x[0] = RMI_SUCCESS;
 
-	while (get_time_ns() - start_ns < (uint64_t)i * 800000);
+	// while (get_time_ns() - start_ns < (uint64_t)i * 800000);
 	// NOTICE("smc_reclaim_mergeable_page():ns,i= %ld %d\n", get_time_ns() - start_ns, i);
 
 out:
