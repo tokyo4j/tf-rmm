@@ -67,7 +67,7 @@ rb2item(struct rb_node *node) {
 static uint32_t
 rand(void)
 {
-	static uint32_t x = 123456;
+	static uint32_t x = 0x51810bd5;
 	x ^= x << 13;
 	x ^= x >> 17;
 	x ^= x << 5;
@@ -109,8 +109,8 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	new_item->refs = new_ref;
 	new_item->pa = pa;
 
-	const uint64_t second = 1000000000;
-	uint64_t time_thr = 30 * second + 10 * second * (uint64_t)rand() / (uint64_t)UINT32_MAX;
+	uint64_t time_thr = 30 + 30 * (uint64_t)rand() / (uint64_t)UINT32_MAX;
+	time_thr *= 1000000000;
 	new_item->ns = new_item->rb.key = get_time_ns() + time_thr;
 	// NOTICE("new_item->ns=%ld\n", new_item->ns);
 	rb_insert(&ctx->pending_pages, &new_item->rb);
