@@ -318,7 +318,7 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	spinlock_acquire(&ctx->lock);
 	// NOTICE("smc_reclaim_mergeable_page(): pa=%lx\n", pa_array_addr);
 
-	// uint64_t start_ns = get_time_ns();
+	uint64_t start_ns = get_time_ns();
 
 	static uint64_t pa_array[512];
 	memset(pa_array, 0, sizeof(pa_array));
@@ -343,7 +343,7 @@ smc_reclaim_mergeable_page(unsigned long pa_array_addr, struct smc_result *res)
 	ns_buffer_write(SLOT_NS, g, 0, 4096, pa_array);
 	res->x[0] = RMI_SUCCESS;
 
-	// while (get_time_ns() - start_ns < (uint64_t)i * 800000);
+	while (get_time_ns() - start_ns < (uint64_t)i * 1000000);
 	// NOTICE("smc_reclaim_mergeable_page():ns,i= %ld %d\n", get_time_ns() - start_ns, i);
 
 out:
