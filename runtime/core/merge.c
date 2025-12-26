@@ -113,7 +113,7 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	new_item->refs = new_ref;
 	new_item->pa = pa;
 
-	uint64_t time_thr = 30 * (uint64_t)rand() / (uint64_t)UINT32_MAX;
+	uint64_t time_thr = 60 * (uint64_t)rand() / (uint64_t)UINT32_MAX;
 	time_thr *= 1000000000;
 	new_item->ns = new_item->rb.key = get_time_ns() + time_thr;
 	// NOTICE("new_item->ns=%ld\n", new_item->ns);
