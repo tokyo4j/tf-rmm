@@ -362,10 +362,10 @@ merge_handle_data_destroy(uint64_t ipa) {
 	for (struct rb_node *node = rb_first(ctx->mergeable_pages);
 			node; node = rb_next(node)) {
 		struct page_item *item = rb2item(node);
-			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
-				if (ref->ipa == ipa) {
-					NOTICE("Tried to destroy mergeable page: ipa=%lx, pa=%lx\n",
-						ref->ipa, item->pa);
+		for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
+			if (ref->ipa == ipa) {
+				NOTICE("Tried to destroy mergeable page: ipa=%lx, pa=%lx\n",
+					ref->ipa, item->pa);
 			}
 		}
 	}
@@ -373,10 +373,10 @@ merge_handle_data_destroy(uint64_t ipa) {
 	for (struct rb_node *node = rb_first(ctx->reclaimed_pages);
 			node; node = rb_next(node)) {
 		struct page_item *item = rb2item(node);
-			for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
-				if (ref->ipa == ipa) {
-					NOTICE("Tried to destroy reclaimed page: ipa=%lx, pa=%lx\n",
-						ref->ipa, item->pa);
+		for (struct page_ref *ref = item->refs; ref; ref = ref->next) {
+			if (ref->ipa == ipa) {
+				NOTICE("Tried to destroy reclaimed page: ipa=%lx, pa=%lx\n",
+					ref->ipa, item->pa);
 			}
 		}
 	}
