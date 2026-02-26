@@ -76,7 +76,6 @@ struct page_ref {
 struct page_item {
 	struct page_ref *refs;
 	uint64_t pa;
-	uint64_t ns;
 	// TODO revoke rec on realm destruction
 	struct rb_node rb;
 };
