@@ -188,18 +188,6 @@ find_dup(struct rb_node *merged_map, struct page_item *item, char *content)
 }
 
 static void
-copy_page(struct page_item *dst, struct page_item *src)
-{
-	struct granule *g_dst_item = find_granule(dst->pa);
-	struct granule *g_src_item = find_granule(src->pa);
-	void *map_dst = buffer_granule_map(g_dst_item, SLOT_RSI_CALL);
-	void *map_src = buffer_granule_map(g_src_item, SLOT_REC);
-	memcpy(map_dst, map_src, 4096);
-	buffer_unmap(map_dst);
-	buffer_unmap(map_src);
-}
-
-static void
 remap_page(struct page_item *dst, struct page_item *src)
 {
 	for (struct page_ref *ref = src->refs; ref; ref = ref->next) {
@@ -260,48 +248,21 @@ reclaim_page(struct ctx *ctx)
 		return 0;
 	}
 
-	struct rb_node **rand_tree = NULL;
-	struct page_item *rand_item = NULL;
-	for (int i = 0; i < 5; i++) {
-		size_t idx = rand() % (rb_size(ctx->pending_pages)
-					+ rb_size(ctx->mergeable_pages));
-		if (idx < rb_size(ctx->pending_pages)) {
-			rand_tree = &ctx->pending_pages;
-		} else {
-			rand_tree = &ctx->mergeable_pages;
-			idx -= rb_size(ctx->pending_pages);
-		}
-		rand_item = rb2item(rb_select(*rand_tree, idx));
-
-		if (rand_item == scan_item || rand_item == dup_item) {
-			rand_item = NULL;
-		}
-		if (rand_item) {
-			break;
-		}
-	}
-	if (!rand_item) {
-		return 0;
-	}
+	NOTICE("p1->ipa=%lx, p2->ipa=%lx, ret->pa=%lx, ret->ipa=%lx\n",
+		scan_item->refs->ipa, dup_item->refs->ipa, dup_item->pa, dup_item->refs->ipa);
 
 	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
-	rb_erase(rand_tree, &rand_item->rb);
 
 	scan_item->ns = max(scan_item->ns, dup_item->ns);
-	dup_item->ns = rand_item->ns;
-	dup_item->rb.key = rand_item->rb.key;
-	copy_page(dup_item, rand_item);
 	remap_page(scan_item, dup_item);
-	remap_page(dup_item, rand_item);
-	rb_insert(rand_tree, &dup_item->rb);
 
-	struct granule *granule = find_granule(rand_item->pa);
+	struct granule *granule = find_granule(dup_item->pa);
 	granule_lock(granule, GRANULE_STATE_DATA);
-	rmm_el3_ifc_gtsi_undelegate(rand_item->pa);
+	rmm_el3_ifc_gtsi_undelegate(dup_item->pa);
 	granule_unlock_transition(granule, GRANULE_STATE_NS);
 
-	uint64_t pa = rand_item->pa;
-	rb_insert(&ctx->reclaimed_pages, &rand_item->rb);
+	uint64_t pa = dup_item->pa;
+	rb_insert(&ctx->reclaimed_pages, &dup_item->rb);
 	// myalloc_free(copied_from_item);
 
 	return pa;
