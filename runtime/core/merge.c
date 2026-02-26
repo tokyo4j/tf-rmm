@@ -283,6 +283,8 @@ reclaim_page(struct ctx *ctx)
 	if (!rand_item) {
 		return 0;
 	}
+	NOTICE("p1->ipa=%lx, p2->ipa=%lx, ret->pa=%lx, ret->ipa=%lx\n",
+		scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
 
 	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
 	rb_erase(rand_tree, &rand_item->rb);
