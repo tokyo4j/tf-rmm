@@ -252,17 +252,13 @@ reclaim_page(struct ctx *ctx)
 	char *content = NULL;
 	struct page_item *scan_item = get_scanned_item(ctx, &content);
 	if (!scan_item) {
-		// NOTICE("scan_item not found\n");
 		return 0;
 	}
-	// NOTICE("scan_item=%8lx(%lx)\n", (uint64_t)&scan_item->rb, scan_item->rb.hash);
 	struct page_item *dup_item = find_dup(ctx->mergeable_pages, scan_item, content);
 	buffer_unmap(content);
 	if (!dup_item) {
-		// NOTICE("dup_item not found\n");
 		return 0;
 	}
-	// NOTICE("dup_item=%8lx(%lx)\n", (uint64_t)&dup_item->rb, dup_item->rb.key);
 
 	struct rb_node **rand_tree = NULL;
 	struct page_item *rand_item = NULL;
@@ -285,12 +281,8 @@ reclaim_page(struct ctx *ctx)
 		}
 	}
 	if (!rand_item) {
-		// NOTICE("rand_item not found\n");
 		return 0;
 	}
-	// NOTICE("p1->ipa=%lx, p2->ipa=%lx, ret->pa=%lx, ret->ipa=%lx\n",
-	// 	scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
-	// NOTICE("rand_item=%8lx(%lx)\n", (uint64_t)&rand_item->rb, rand_item->rb.hash);
 
 	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
 	rb_erase(rand_tree, &rand_item->rb);
