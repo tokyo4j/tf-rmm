@@ -113,9 +113,6 @@ set_page_mergeable(struct ctx *ctx, struct rec *rec, uint64_t ipa)
 	new_item->refs = new_ref;
 	new_item->pa = pa;
 
-	uint64_t time_thr = 60 * (uint64_t)rand() / (uint64_t)UINT32_MAX;
-	time_thr *= 1000000000;
-	new_item->ns = new_item->rb.key = get_time_ns() + time_thr;
 	// NOTICE("new_item->ns=%ld\n", new_item->ns);
 	rb_insert(&ctx->pending_pages, &new_item->rb);
 }
@@ -148,7 +145,7 @@ static struct page_item *
 get_scanned_item(struct ctx *ctx, char **content)
 {
 	struct page_item *item = rb2item(rb_first(ctx->pending_pages));
-	if (item && get_time_ns() >= item->ns) {
+	if (item) {
 		rb_erase(&ctx->pending_pages, &item->rb);
 
 		struct granule *grn = find_granule(item->pa);
@@ -164,15 +161,10 @@ get_scanned_item(struct ctx *ctx, char **content)
 static struct page_item *
 find_dup(struct rb_node *merged_map, struct page_item *item, char *content)
 {
-	uint64_t now = get_time_ns();
-
 	for (struct rb_node *node = rb_find(merged_map, item->rb.key);
 			node; node = node->dup) {
 		struct page_item *dup_item = rb2item(node);
 		if (dup_item == item) {
-			continue;
-		}
-		if (now < dup_item->ns) {
 			continue;
 		}
 		struct granule *grn = find_granule(dup_item->pa);
@@ -242,11 +234,6 @@ remap_page(struct page_item *dst, struct page_item *src)
 }
 
 static uint64_t
-max(uint64_t a, uint64_t b) {
-	return (a > b) ? a : b;
-}
-
-static uint64_t
 reclaim_page(struct ctx *ctx)
 {
 	char *content = NULL;
@@ -283,12 +270,12 @@ reclaim_page(struct ctx *ctx)
 	if (!rand_item) {
 		return 0;
 	}
+	NOTICE("p1->ipa=%lx, p2->ipa=%lx, ret->pa=%lx, ret->ipa=%lx\n",
+		scan_item->refs->ipa, dup_item->refs->ipa, rand_item->pa, rand_item->refs->ipa);
 
 	rb_erase(&ctx->mergeable_pages, &dup_item->rb);
 	rb_erase(rand_tree, &rand_item->rb);
 
-	scan_item->ns = max(scan_item->ns, dup_item->ns);
-	dup_item->ns = rand_item->ns;
 	dup_item->rb.key = rand_item->rb.key;
 	copy_page(dup_item, rand_item);
 	remap_page(scan_item, dup_item);
